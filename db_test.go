@@ -1,0 +1,693 @@
+package bitcask
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+func openTmpDB(t *testing.T, pattern string, config Config) (string, *DB, error) {
+	t.Helper()
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return "", nil, fmt.Errorf("getting current working directory: %w", err)
+	}
+	path, err := os.MkdirTemp(currentDir, pattern)
+	if err != nil {
+		return "", nil, fmt.Errorf("making tmp direcory: %w", err)
+	}
+	db, err := Open(path, config)
+	if err != nil {
+		os.RemoveAll(path)
+		return "", nil, fmt.Errorf("opening DB directory: %w", err)
+	}
+	return path, db, nil
+}
+
+func assertOp(t *testing.T, db *DB, op string, key string, value []byte, opErr error) {
+	t.Helper()
+	switch op {
+	case "Get":
+		v, err := db.Get(key)
+		if !errors.Is(err, opErr) {
+			t.Fatalf("Get('%s'): %s", key, err)
+		}
+		if !bytes.Equal(v, value) {
+			t.Fatalf("Get('%s'): got '%s', want '%s'", key, v, value)
+		}
+	case "Put":
+		if err := db.Put(key, value); !errors.Is(err, opErr) {
+			t.Fatalf("Put('%s', '%s'): %v", key, value, err)
+		}
+	case "Del":
+		if err := db.Delete(key); !errors.Is(err, opErr) {
+			t.Fatalf("Delete('%s'): %v", key, err)
+		}
+	default:
+		panic("invalid operation")
+	}
+}
+
+func TestOpen_LocksDB(t *testing.T) {
+	config := DefaultConfig()
+	path, db, err := openTmpDB(t, "TestOpen_LocksDB", config)
+	if err != nil {
+		t.Fatalf("opening tmp DB directory the first time: %v", err)
+	}
+	defer os.RemoveAll(path)
+	defer db.Close()
+
+	want := ErrDatabaseLocked
+	_, err = Open(path, config)
+	if !errors.Is(err, want) {
+		t.Fatalf("want '%v', got '%v'", want, err)
+	}
+}
+
+func TestDB_SingleThreaded(t *testing.T) {
+	config := DefaultConfig()
+	config.MaxKeySize = 4
+	config.MaxValueSize = 8
+	config.MaxFileSize = 64
+	config.HandleEvent = func(event any) {
+		switch ev := event.(type) {
+		case error:
+			t.Logf("event: error: %s\n", ev)
+		default:
+			t.Logf("event: %v\n", ev)
+		}
+	}
+
+	path, db, err := openTmpDB(t, "TestDB_SingleThreaded", config)
+	if err != nil {
+		t.Fatalf("opening tmp DB directory: %v", err)
+	}
+	defer os.RemoveAll(path)
+
+	dfs, err := filepath.Glob(filepath.Join(path, "*.data"))
+	if err != nil {
+		t.Fatalf("reading directory: %v", err)
+	}
+	if want := 1; len(dfs) != want {
+		t.Fatalf("want %d file, got %d", want, len(dfs))
+	}
+
+	ops := []struct {
+		Op    string
+		Key   string
+		Value []byte
+		Err   error
+	}{
+		{"Put", "aaaa", []byte("v1aaaaaa"), nil},               // 32 = 20 + 12
+		{"Put", "bbbb", []byte("v1bbbbbb"), nil},               // 32 = 20 + 12
+		{"Put", "cccc", []byte("v1cc"), nil},                   // 28 = 20 + 8
+		{"Get", "aaaa", []byte("v1aaaaaa"), nil},               // 0
+		{"Put", "aaaa", []byte("v2aaaaaa"), nil},               // 32 = 20 + 12
+		{"Del", "bbbb", nil, nil},                              // 24 = 20 + 4
+		{"Put", "dddd", []byte("v1dd"), nil},                   // 28 = 20 + 8
+		{"Get", "aaaa", []byte("v2aaaaaa"), nil},               // 0
+		{"Put", "eeee", []byte("v1ee"), nil},                   // 28 = 20 + 8
+		{"Put", "ffff", []byte("v1ff"), nil},                   // 28 = 20 + 8
+		{"Get", "bbbb", nil, ErrKeyNotFound},                   // 0
+		{"Del", "x", nil, nil},                                 // 0
+		{"Put", "aaaaa", []byte("v3aaaaaa"), ErrKeyTooLarge},   // 0
+		{"Put", "aaaa", []byte("v4aaaaaaa"), ErrValueTooLarge}, // 0
+		{"Get", "z", nil, ErrKeyNotFound},                      // 0
+		{"Get", "cccc", []byte("v1cc"), nil},                   // 0
+		{"Get", "ffff", []byte("v1ff"), nil},                   // 0
+		{"Get", "aaaa", []byte("v2aaaaaa"), nil},               // 0
+	}
+
+	for i, op := range ops {
+		t.Logf("i=%d", i)
+		assertOp(t, db, op.Op, op.Key, op.Value, op.Err)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing DB: %v", err)
+	}
+
+	dfs, err = filepath.Glob(filepath.Join(path, "*.data"))
+	if err != nil {
+		t.Fatalf("reading directory: %v", err)
+	}
+
+	// TODO: This may be flaky. Depends on the timing of when the log compaction goroutine gets scheduled.
+	if want := 3; len(dfs) != want {
+		t.Fatalf("want %d files, got %d", want, len(dfs))
+	}
+
+	for _, df := range dfs {
+		info, err := os.Stat(df)
+		if err != nil {
+			t.Fatalf("statting %s: %v", info.Name(), err)
+		}
+		if info.Size() > config.MaxFileSize {
+			t.Fatalf("%s: want size <= %d, got size: %d", info.Name(), config.MaxFileSize, info.Size())
+		}
+	}
+
+	db, err = Open(path, config)
+	if err != nil {
+		t.Fatalf("re-opening DB: %v", err)
+	}
+	defer db.Close()
+
+	ops = []struct {
+		Op    string
+		Key   string
+		Value []byte
+		Err   error
+	}{
+		{"Get", "aaaa", []byte("v2aaaaaa"), nil},
+		{"Get", "bbbb", nil, ErrKeyNotFound},
+		{"Get", "z", nil, ErrKeyNotFound},
+		{"Get", "cccc", []byte("v1cc"), nil},
+		{"Get", "ffff", []byte("v1ff"), nil},
+		{"Get", "aaaa", []byte("v2aaaaaa"), nil},
+	}
+
+	for i, op := range ops {
+		t.Logf("i=%d", i)
+		assertOp(t, db, op.Op, op.Key, op.Value, op.Err)
+	}
+}
+
+func TestGet_WhileCompacting(t *testing.T) {
+	const vsize = 4096
+	config := DefaultConfig()
+	config.MaxKeySize = 1
+	config.MaxValueSize = vsize
+	config.MaxFileSize = 1 + vsize + 20
+	config.UseRWLock = true
+
+	var compactErrs []error
+	config.HandleEvent = func(event any) {
+		switch ev := event.(type) {
+		case error:
+			if ev != nil && !errors.Is(ev, &LogCompactionError{}) {
+				compactErrs = append(compactErrs, ev)
+			}
+		}
+	}
+
+	path, db, err := openTmpDB(t, "TestGet_WhileCompacting", config)
+	if err != nil {
+		t.Fatalf("opening tmp DB directory: %v", err)
+	}
+	defer os.RemoveAll(path)
+	defer db.Close()
+
+	err = db.Put("a", bytes.Repeat([]byte{'a'}, vsize))
+	if err != nil {
+		t.Fatalf("Put(\"a\", ...): %v", err)
+	}
+
+	want := bytes.Repeat([]byte{'b'}, vsize)
+	c := make(chan error)
+	go func() {
+		c <- nil
+		for range 10 {
+			if err := db.Put("b", want); err != nil {
+				c <- err
+				return
+			}
+		}
+		c <- nil
+	}()
+
+	<-c
+	for range 20 {
+		got, err := db.Get("b")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(want, got) {
+			t.Fatalf("want %s, got %s", want, got)
+		}
+	}
+	if err := <-c; err != nil {
+		t.Fatalf("Put(\"b\", ...): %v", err)
+	}
+	if len(compactErrs) > 0 {
+		for _, err := range compactErrs {
+			t.Errorf("compact: %v", err)
+		}
+	}
+}
+
+func TestGet_InvalidRecord(t *testing.T) {
+	path, db, err := openTmpDB(t, "TestGet_InvalidRecord", DefaultConfig())
+	if err != nil {
+		t.Fatalf("opening tmp DB directory: %v", err)
+	}
+	defer os.RemoveAll(path)
+	defer db.Close()
+
+	k1, v1 := "aaaa", []byte("bbbb")
+	if err := db.Put(k1, v1); err != nil {
+		t.Fatalf("Put('%s', '%s'): %v", k1, v1, err)
+	}
+
+	k2, v2 := "cccc", []byte("dddd")
+	if err := db.Put(k2, v2); err != nil {
+		t.Fatalf("Put('%s', '%s'): %v", k2, v2, err)
+	}
+
+	if got, err := db.Get(k1); err != nil {
+		t.Fatalf("Get('%s'): %s", k1, err)
+	} else if !bytes.Equal(v1, got) {
+		t.Fatalf("want %s, got %s", v1, got)
+	}
+
+	if got, err := db.Get(k2); err != nil {
+		t.Fatalf("Get('%s'): %s", k2, err)
+	} else if !bytes.Equal(v2, got) {
+		t.Fatalf("want %s, got %s", v2, got)
+	}
+
+	fnames, err := filepath.Glob(filepath.Join(path, "*.data"))
+	if err != nil {
+		t.Fatalf("globing dir: %v", err)
+	}
+	if len(fnames) != 1 {
+		t.Fatalf("want 1 data file, got %d", len(fnames))
+	}
+
+	fname := fnames[0]
+	info, err := os.Stat(fname)
+	if err != nil {
+		t.Fatalf("statting file: %v", err)
+	}
+
+	fsize := 20 + int64(len(k1)) + int64(len(v1)) + 20 + int64(len(k2)) + int64(len(v2))
+	if info.Size() != fsize {
+		t.Fatalf("want file size %d, got %d", fsize, info.Size())
+	}
+
+	for i := int64(1); i < fsize; i++ {
+		if err := os.Truncate(fname, fsize-i); err != nil {
+			t.Fatalf("truncating file: %v", err)
+		}
+		if _, err := db.Get(k2); !errors.Is(err, ErrTruncatedRecord) {
+			t.Fatalf("%d byte(s) truncated: want error: '%v', got: '%v'", i, ErrTruncatedRecord, err)
+		}
+	}
+}
+
+func TestDelete_NonexistentKey_DoesNotWriteTombstone(t *testing.T) {
+	path, db, err := openTmpDB(t, "TestDelete_NonexistentKey_DoesNotWriteTombstone", DefaultConfig())
+	if err != nil {
+		t.Fatalf("opening tmp DB directory: %v", err)
+	}
+	defer os.RemoveAll(path)
+	defer db.Close()
+
+	for i := 0; i < 255; i++ {
+		if err := db.Delete(string([]rune{rune(i)})); err != nil {
+			t.Fatalf("error deleting non-existent key: %v", err)
+		}
+	}
+
+	dfs, err := filepath.Glob(filepath.Join(path, "*.data"))
+	if err != nil {
+		t.Fatalf("reading directory: %v", err)
+	}
+	for _, df := range dfs {
+		info, err := os.Stat(df)
+		if err != nil {
+			t.Fatalf("getting file info: %v", err)
+		}
+		if got := info.Size(); got > 0 {
+			t.Fatalf("wanted empty file, got file size: %d", got)
+		}
+	}
+}
+
+func TestClose_WhilePutting(t *testing.T) {
+	config := DefaultConfig()
+	config.MaxKeySize = 5000
+	config.MaxValueSize = 5000
+
+	tt := []struct {
+		name string
+		kLen int
+		vLen int
+	}{
+		{
+			name: "flushing buffered writer",
+			kLen: 2,
+			vLen: 2,
+		},
+		{
+			name: "writing key",
+			kLen: 5000, // longer than bufio.Writer's default 4096 buffer
+			vLen: 2,
+		},
+		{
+			name: "writing value",
+			kLen: 2,
+			vLen: 5000, // longer than bufio.Writer's default 4096 buffer
+		},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			path, db, err := openTmpDB(t, "TestClose_WhilePutting", config)
+			if err != nil {
+				t.Fatalf("opening tmp DB directory: %v", err)
+			}
+			defer os.RemoveAll(path)
+
+			k := strings.Repeat("k", tc.kLen)
+
+			c := make(chan error)
+			go func() {
+				c <- nil
+				for i := 0; ; i++ {
+					if err := db.Put(k, bytes.Repeat([]byte{byte(i)}, tc.vLen)); err != nil {
+						c <- err
+						return
+					}
+				}
+			}()
+
+			<-c
+			if err := db.Close(); err != nil {
+				t.Fatalf("Close(): %v", err)
+			}
+			if err := <-c; !errors.Is(err, ErrDatabaseClosed) {
+				t.Fatalf("Put(): %v", err)
+			}
+
+			// Ensure all records are valid.
+			if _, err := Open(path, config); err != nil {
+				t.Fatalf("failed to Open() after Close(): %v", err)
+			}
+		})
+	}
+}
+
+func TestClose_WhileGetting(t *testing.T) {
+	path, db, err := openTmpDB(t, "TestClose_WhileGetting", DefaultConfig())
+	if err != nil {
+		t.Fatalf("opening tmp DB directory: %v", err)
+	}
+	defer os.RemoveAll(path)
+
+	k, v := "foo", []byte("bar")
+	if err := db.Put(k, v); err != nil {
+		t.Fatalf("Put(): %v", err)
+	}
+
+	c := make(chan error)
+	go func() {
+		c <- nil
+		for i := 0; ; i++ {
+			got, err := db.Get(k)
+			if err != nil {
+				c <- err
+				return
+			}
+			if !bytes.Equal(v, got) {
+				c <- fmt.Errorf("want: %s, got: %s", v, got)
+				return
+			}
+		}
+	}()
+
+	<-c
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+	if err := <-c; !errors.Is(err, ErrDatabaseClosed) {
+		t.Fatalf("Get(): %v", err)
+	}
+
+	// Ensure all records are valid.
+	if _, err := Open(path, DefaultConfig()); err != nil {
+		t.Fatalf("failed to Open() after Close(): %v", err)
+	}
+}
+
+func TestClose_WhileDeleting(t *testing.T) {
+	path, db, err := openTmpDB(t, "TestClose_WhileDeleting", DefaultConfig())
+	if err != nil {
+		t.Fatalf("opening tmp DB directory: %v", err)
+	}
+	defer os.RemoveAll(path)
+
+	v := []byte("v")
+	for i := 0; i < 1000; i++ {
+		if err := db.Put(strconv.Itoa(i), v); err != nil {
+			t.Fatalf("Put(): %v", err)
+		}
+	}
+
+	c := make(chan error)
+	go func() {
+		c <- nil
+		for i := 0; i < 1000; i++ {
+			if err := db.Delete(strconv.Itoa(i)); err != nil {
+				c <- err
+				return
+			}
+		}
+		c <- errors.New("delete loop completed before Close() was called")
+	}()
+
+	<-c
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+	if err := <-c; !errors.Is(err, ErrDatabaseClosed) {
+		t.Fatalf("Delete(): %v", err)
+	}
+
+	// Ensure all records are valid.
+	if _, err := Open(path, DefaultConfig()); err != nil {
+		t.Fatalf("failed to Open() after Close(): %v", err)
+	}
+}
+
+func TestClose_UnlocksDB(t *testing.T) {
+	config := DefaultConfig()
+	path, db, err := openTmpDB(t, "TestClose_UnlocksDB", config)
+	if err != nil {
+		t.Fatalf("opening tmp DB directory the first time: %v", err)
+	}
+	defer os.RemoveAll(path)
+
+	if _, err := os.Stat(filepath.Join(path, "~.lock")); err != nil {
+		t.Fatalf("verifying ~.lock file exists: %v", err)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(path, "~.lock")); !os.IsNotExist(err) {
+		t.Fatalf("want: '%v', got: '%v'", fs.ErrNotExist, err)
+	}
+}
+
+func TestClose_DBMethodsReturnErrDatabaseClosed(t *testing.T) {
+	path, db, err := openTmpDB(t, "TestClose_DBMethodsReturnErrDatabaseClosed", DefaultConfig())
+	if err != nil {
+		t.Fatalf("opening tmp DB directory: %v", err)
+	}
+	defer os.RemoveAll(path)
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing DB the first time: %v", err)
+	}
+
+	if _, err := db.Get("foo"); !errors.Is(err, ErrDatabaseClosed) {
+		t.Errorf("Get: want '%v', got '%v'", ErrDatabaseClosed, err)
+	}
+	if err := db.Put("foo", []byte("bar")); !errors.Is(err, ErrDatabaseClosed) {
+		t.Errorf("Put: want '%v', got '%v'", ErrDatabaseClosed, err)
+	}
+	if err := db.Delete("foo"); !errors.Is(err, ErrDatabaseClosed) {
+		t.Errorf("Delete: want '%v', got '%v'", ErrDatabaseClosed, err)
+	}
+	if err := db.EachKey(func(key string) bool { return false }); !errors.Is(err, ErrDatabaseClosed) {
+		t.Errorf("EachKey: want '%v', got '%v'", ErrDatabaseClosed, err)
+	}
+	if err := db.Sync(); !errors.Is(err, ErrDatabaseClosed) {
+		t.Errorf("Sync: want '%v', got '%v'", ErrDatabaseClosed, err)
+	}
+	if err := db.Close(); !errors.Is(err, ErrDatabaseClosed) {
+		t.Errorf("Close: want '%v', got '%v'", ErrDatabaseClosed, err)
+	}
+}
+
+func BenchmarkGet(b *testing.B) {
+	currentDir, err := os.Getwd()
+	if err != nil {
+		b.Fatal(err)
+	}
+	testDir, err := os.MkdirTemp(currentDir, "BenchmarkGet")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer os.RemoveAll(testDir)
+
+	tt := []struct {
+		name string
+		size int
+	}{
+		{"128B", 128},
+		{"256B", 256},
+		{"512B", 512},
+		{"1K", 1024},
+		{"2K", 2048},
+		{"4K", 4096},
+		{"8K", 8192},
+		{"16K", 16384},
+		{"32K", 32768},
+	}
+
+	for _, tc := range tt {
+		b.Run(tc.name, func(b *testing.B) {
+			b.SetBytes(int64(tc.size))
+
+			key := "foo"
+			value := []byte(strings.Repeat(" ", tc.size))
+
+			config := DefaultConfig()
+			config.MaxKeySize = len(key)
+			config.MaxValueSize = tc.size
+
+			db, err := Open(testDir, config)
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			err = db.Put(key, value)
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				val, err := db.Get(key)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if !bytes.Equal(val, value) {
+					b.Errorf("unexpected value")
+				}
+			}
+			b.StopTimer()
+			db.Close()
+		})
+	}
+}
+
+func BenchmarkPut(b *testing.B) {
+	currentDir, err := os.Getwd()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	tt := []struct {
+		name string
+		size int
+	}{
+		{"128B", 128},
+		{"256B", 256},
+		{"512B", 512},
+		{"1K", 1024},
+		{"2K", 2048},
+		{"4K", 4096},
+		{"8K", 8192},
+		{"16K", 16384},
+		{"32K", 32768},
+	}
+
+	testDir, err := os.MkdirTemp(currentDir, "BenchmarkPut")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer os.RemoveAll(testDir)
+
+	db, err := Open(testDir, DefaultConfig())
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	for _, tc := range tt {
+		b.Run(tc.name, func(b *testing.B) {
+			b.SetBytes(int64(tc.size))
+			key := "foo"
+			value := []byte(strings.Repeat(" ", tc.size))
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				if err := db.Put(key, value); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkPutSync(b *testing.B) {
+	currentDir, err := os.Getwd()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	tt := []struct {
+		name string
+		size int
+	}{
+		{"128B", 128},
+		{"256B", 256},
+		{"512B", 512},
+		{"1K", 1024},
+		{"2K", 2048},
+		{"4K", 4096},
+		{"8K", 8192},
+		{"16K", 16384},
+		{"32K", 32768},
+	}
+
+	testDir, err := os.MkdirTemp(currentDir, "BenchmarkPutSync")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer os.RemoveAll(testDir)
+
+	db, err := Open(testDir, DefaultConfig())
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	for _, tc := range tt {
+		b.Run(tc.name, func(b *testing.B) {
+			b.SetBytes(int64(tc.size))
+			key := "foo"
+			value := []byte(strings.Repeat(" ", tc.size))
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				if err := db.Put(key, value); err != nil {
+					b.Fatal(err)
+				}
+				if err = db.Sync(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
