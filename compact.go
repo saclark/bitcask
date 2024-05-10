@@ -55,7 +55,7 @@ func (db *DB) switchover() (err error) {
 	}
 
 	db.fw = fw
-	db.fwEncoder = newDataRecordEncoder(fw)
+	db.fwEncoder = newWALRecordEncoder(fw)
 	db.fwOffset = 0
 	db.fwID = fid
 	db.frIndex[fid] = fr

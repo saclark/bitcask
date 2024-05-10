@@ -48,7 +48,7 @@ type DB struct {
 	emit        func(any)
 	fw          *os.File                // Active segment opened for writing.
 	fwID        segmentID               // Active segment ID.
-	fwEncoder   *dataRecordEncoder      // Active segment encoder.
+	fwEncoder   *walRecordEncoder       // Active segment encoder.
 	fwOffset    int64                   // Active segment current offset.
 	frIndex     map[segmentID]*os.File  // Set of segments opened for reading.
 	kvIndex     map[string]indexedValue // key-value index.
@@ -141,10 +141,10 @@ func Open(path string, config Config) (*DB, error) {
 		frIndex[fid] = fr
 
 		// Index the segment.
-		dec := newDataRecordDecoder(fr)
+		dec := newWALRecordDecoder(fr)
 		var offset int64
 		for {
-			var rec dataRecord
+			var rec walRecord
 			if err := dec.Decode(&rec); err != nil {
 				if errors.Is(err, io.EOF) {
 					break
@@ -205,7 +205,7 @@ func Open(path string, config Config) (*DB, error) {
 		emit:        config.HandleEvent,
 		fw:          fw,
 		fwID:        fwID,
-		fwEncoder:   newDataRecordEncoder(fw),
+		fwEncoder:   newWALRecordEncoder(fw),
 		fwOffset:    info.Size(),
 		frIndex:     frIndex,
 		kvIndex:     kvIndex,
@@ -274,7 +274,7 @@ func (db *DB) Put(key string, value []byte) error {
 // put persists the key-value pair and updates the in-memory index. Callers must
 // take care to Lock() before calling this method.
 func (db *DB) put(key string, value []byte) error {
-	rec := newDataRecord([]byte(key), value)
+	rec := newWALRecord([]byte(key), value)
 	if db.fwOffset+rec.Size() > db.cfg.MaxSegmentSize && !db.cfg.ManualCompactionOnly {
 		if err := db.switchover(); err != nil {
 			return fmt.Errorf("switching over to new active segment file: %w", err)

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// dataRecord header offsets
+// [walRecord] header offsets
 const (
 	crcOff     = 0
 	tsOff      = crcOff + 4
@@ -18,18 +18,18 @@ const (
 	headerSize = vszOff + 4
 )
 
-// dataRecord represents the data written to a segment file for a single
+// walRecord represents the data written to a segment file for a single
 // key-value pair.
-type dataRecord struct {
+type walRecord struct {
 	CRC       uint32
 	Timestamp uint64
 	Key       []byte
 	Value     []byte
 }
 
-// newDataRecord constructs a new dataRecord value.
-func newDataRecord(key []byte, value []byte) dataRecord {
-	return dataRecord{
+// newWALRecord constructs a new [walRecord] value.
+func newWALRecord(key []byte, value []byte) walRecord {
+	return walRecord{
 		CRC:       crc32.ChecksumIEEE(value),
 		Timestamp: uint64(time.Now().UTC().UnixNano()),
 		Key:       key,
@@ -37,31 +37,31 @@ func newDataRecord(key []byte, value []byte) dataRecord {
 	}
 }
 
-// Size returns the byte size of the full dataRecord when written to the segment
+// Size returns the byte size of the full [walRecord] when written to the segment
 // file.
-func (r *dataRecord) Size() int64 {
+func (r *walRecord) Size() int64 {
 	return headerSize + int64(len(r.Key)) + int64(len(r.Value))
 }
 
 // Valid computes a 32-bit CRC checksum of r.Value and returns whether it
 // matches r.CRC.
-func (r *dataRecord) Valid() bool {
+func (r *walRecord) Valid() bool {
 	return crc32.ChecksumIEEE(r.Value) == r.CRC
 }
 
-// dataRecordEncoder writes dataRecord values to an output stream.
-type dataRecordEncoder struct {
+// walRecordEncoder writes [walRecord] values to an output stream.
+type walRecordEncoder struct {
 	w  io.Writer
 	bw *bufio.Writer
 }
 
-// newDataRecordEncoder returns a new dataRecordEncoder that writes to w.
-func newDataRecordEncoder(w io.Writer) *dataRecordEncoder {
-	return &dataRecordEncoder{w: w, bw: bufio.NewWriter(w)}
+// newWALRecordEncoder returns a new walRecordEncoder that writes to w.
+func newWALRecordEncoder(w io.Writer) *walRecordEncoder {
+	return &walRecordEncoder{w: w, bw: bufio.NewWriter(w)}
 }
 
 // Encode writes the binary encoding of rec to the stream.
-func (e *dataRecordEncoder) Encode(rec dataRecord) (n int64, err error) {
+func (e *walRecordEncoder) Encode(rec walRecord) (n int64, err error) {
 	// If there is an error, reset the buffered writer and adjust n to reflect
 	// the number of bytes actually flushed to the underlying writer.
 	defer func() {
@@ -107,20 +107,20 @@ func (e *dataRecordEncoder) Encode(rec dataRecord) (n int64, err error) {
 	return n, nil
 }
 
-// dataRecordDecoder reads and decodes dataRecord values from an input stream.
-type dataRecordDecoder struct {
+// walRecordDecoder reads and decodes [walRecord] values from an input stream.
+type walRecordDecoder struct {
 	r  io.Reader
 	br *bufio.Reader
 }
 
-// newDataRecordDecoder returns a new dataRecordDecoder that reads from r.
-func newDataRecordDecoder(r io.Reader) *dataRecordDecoder {
-	return &dataRecordDecoder{r: r, br: bufio.NewReader(r)}
+// newWALRecordDecoder returns a new walRecordDecoder that reads from r.
+func newWALRecordDecoder(r io.Reader) *walRecordDecoder {
+	return &walRecordDecoder{r: r, br: bufio.NewReader(r)}
 }
 
-// Decode reads the next encoded dataRecord value from its input and stores it
+// Decode reads the next encoded [walRecord] value from its input and stores it
 // in the value pointed to by rec.
-func (d *dataRecordDecoder) Decode(rec *dataRecord) (err error) {
+func (d *walRecordDecoder) Decode(rec *walRecord) (err error) {
 	defer func() {
 		if err != nil {
 			d.br.Reset(d.r)

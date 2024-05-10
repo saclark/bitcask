@@ -7,8 +7,8 @@ import (
 
 func BenchmarkEncoder(b *testing.B) {
 	var buf bytes.Buffer
-	enc := newDataRecordEncoder(&buf)
-	rec := newDataRecord([]byte("mykey"), []byte("myvalue"))
+	enc := newWALRecordEncoder(&buf)
+	rec := newWALRecord([]byte("mykey"), []byte("myvalue"))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := enc.Encode(rec); err != nil {
@@ -22,9 +22,9 @@ func BenchmarkDecoder(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		dec := newDataRecordDecoder(bytes.NewBuffer(data))
+		dec := newWALRecordDecoder(bytes.NewBuffer(data))
 		b.StartTimer()
-		if err := dec.Decode(&dataRecord{}); err != nil {
+		if err := dec.Decode(&walRecord{}); err != nil {
 			b.Fatal(err)
 		}
 	}

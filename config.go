@@ -28,7 +28,7 @@ type Config struct {
 	// performed manually via [DB.Switchover] and [DB.Compact].
 	//
 	// It must be at least 20 bytes larger than the sum of [Config.MaxKeySize]
-	// and [Config.MaxValueSize] in order to accomodate the maximum size data
+	// and [Config.MaxValueSize] in order to accomodate the maximum size WAL
 	// record.
 	MaxSegmentSize int64
 
