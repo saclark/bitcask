@@ -1,11 +1,33 @@
 package bitcask
 
-import "fmt"
+import (
+	"fmt"
+	"io/fs"
+	"os"
+)
 
 const (
+	lockFilename         = "~.lock"
+	dfFileExt            = ".data"
+	lockFileFlag         = os.O_CREATE | os.O_EXCL
+	dfFileFlag           = os.O_CREATE | os.O_APPEND | os.O_WRONLY
+	dbDirMode            = fs.FileMode(0755) // rwxr-xr-x
+	lockFileMode         = fs.FileMode(0644) // rw-r--r--
+	dfFileMode           = fs.FileMode(0644) // rw-r--r--
 	minCompactedFileID   = fileID(0x00)
 	minUncompactedFileID = fileID(0x8000000)
 )
+
+func syncAndClose(f *os.File) error {
+	if err := f.Sync(); err != nil {
+		_ = f.Close() // try to close, ignore error
+		return fmt.Errorf("syncing %s: %v", f.Name(), err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing %s: %v", f.Name(), err)
+	}
+	return nil
+}
 
 // fileID is a unique identifier for a data file.
 //
@@ -40,7 +62,7 @@ func (id fileID) Inc() fileID {
 // It is formatted such that the lexicographical ordering of data file filenames
 // should match the numerical ordering of their corresponding fileIDs.
 func (id fileID) Filename() string {
-	return fmt.Sprintf("%020d", id) + dataFileExt
+	return fmt.Sprintf("%020d", id) + dfFileExt
 }
 
 func (db *DB) nextCompactedFileID() fileID {

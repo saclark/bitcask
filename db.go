@@ -9,22 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-)
-
-const (
-	fileAppendFlag     = os.O_APPEND | os.O_CREATE | os.O_WRONLY
-	fileCreateExclFlag = os.O_CREATE | os.O_EXCL
-	fileWriteMode      = fs.FileMode(0644)
-	dirMode            = fs.FileMode(0755)
-	dataFileExt        = ".data"
-	lockFilename       = "~.lock"
 )
 
 // rwLocker defines the interface for a reader-writer lock.
@@ -82,18 +72,13 @@ func Open(path string, config Config) (*DB, error) {
 	}
 
 	// Create the directory if it doesn't exist.
-	if _, err := os.Stat(path); err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("statting directory: %v", err)
-		}
-		if err := os.MkdirAll(path, dirMode); err != nil {
-			return nil, fmt.Errorf("creating directory: %v", err)
-		}
+	if err := os.MkdirAll(path, dbDirMode); err != nil {
+		return nil, fmt.Errorf("creating directory: %v", err)
 	}
 
 	// Lock the DB.
 	lockPath := filepath.Join(path, lockFilename)
-	if _, err := os.OpenFile(lockPath, fileCreateExclFlag, fileWriteMode); err != nil {
+	if _, err := os.OpenFile(lockPath, lockFileFlag, lockFileMode); err != nil {
 		if os.IsExist(err) {
 			return nil, ErrDatabaseLocked
 		}
@@ -101,7 +86,7 @@ func Open(path string, config Config) (*DB, error) {
 	}
 
 	// List all data file filenames.
-	fns, err := filepath.Glob(filepath.Join(path, "*"+dataFileExt))
+	fns, err := filepath.Glob(filepath.Join(path, "*"+dfFileExt))
 	if err != nil {
 		return nil, fmt.Errorf("finding data files in directory: %v", err)
 	}
@@ -112,7 +97,7 @@ func Open(path string, config Config) (*DB, error) {
 	for _, fn := range fns {
 		fn = filepath.Base(fn)
 		ext := filepath.Ext(fn)
-		if ext != dataFileExt {
+		if ext != dfFileExt {
 			continue
 		}
 		id, err := strconv.ParseInt(strings.TrimSuffix(fn, ext), 10, 64)
@@ -134,8 +119,8 @@ func Open(path string, config Config) (*DB, error) {
 	fwID := fids[len(fids)-1]
 	fw, err := os.OpenFile(
 		filepath.Join(path, fwID.Filename()),
-		fileAppendFlag,
-		fileWriteMode,
+		dfFileFlag,
+		dfFileMode,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("opening active data file for writing: %v", err)
@@ -398,16 +383,5 @@ func (db *DB) Close() error {
 		return fmt.Errorf("removing %s file: %v", lockFilename, err)
 	}
 
-	return nil
-}
-
-func syncAndClose(f *os.File) error {
-	if err := f.Sync(); err != nil {
-		_ = f.Close() // try to close, ignore error
-		return fmt.Errorf("syncing %s: %v", f.Name(), err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("closing %s: %v", f.Name(), err)
-	}
 	return nil
 }

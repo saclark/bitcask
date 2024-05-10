@@ -29,7 +29,7 @@ func (db *DB) switchover() (err error) {
 	fpath := filepath.Join(db.dir, fid.Filename())
 
 	var fw, fr *os.File
-	fw, err = os.OpenFile(fpath, fileAppendFlag, fileWriteMode)
+	fw, err = os.OpenFile(fpath, dfFileFlag, dfFileMode)
 	if err != nil {
 		return fmt.Errorf("opening new active data file for writing: %v", err)
 	}
@@ -162,7 +162,7 @@ func (db *DB) compact() error {
 			}
 
 			var err error
-			fw, err = os.OpenFile(filepath.Join(db.dir, fn), fileAppendFlag, fileWriteMode)
+			fw, err = os.OpenFile(filepath.Join(db.dir, fn), dfFileFlag, dfFileMode)
 			if err != nil {
 				return fmt.Errorf("opening new compacted data file for writing: %v", err)
 			}

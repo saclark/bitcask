@@ -14,7 +14,6 @@
 * [ ] Much more extensive benchmarking and profiling.
 * [ ] Add expiry feature. Replace Timestamp with Expiry?
 * [ ] crc the whole record? Not just value?
-* [ ] Is 0755 the appropriate `dirMode`? Make it configurable?
 * [ ] Profile to determine if usage of bufio.Reader is necessary or if io.CopyBuffer (4096 buf?) would be better than io.Copy when writing merged data files.
 * [ ] Provide a CLI which wraps this library.
 * [ ] Provide a server exposing this library over the Redis serialization protocol (RESP) (as a separate package in separate repo if 3rd party package is used). Call it `bitcaskresp` and use package `github.com/tidwall/redcon`.
