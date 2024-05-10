@@ -37,9 +37,14 @@ type Config struct {
 	// requiring any log compaction to be triggered manually via [DB.Compact].
 	ManualCompactionOnly bool
 
-	// UseRWLock specifies whether to use a reader-writer lock for
-	// synchronization. When false, a standard mutex is used instead.
-	UseRWLock bool
+	// UseStandardMutex mandates the usage of a standard mutex for
+	// synchronization when true. A reader-writer lock is used when false.
+	//
+	// A standard mutex may outperform a reader-writer lock in a surprising
+	// number of scenarios due to the additional overhead associated with
+	// reader-writer locks. Users are encouraged to perform their own benchmarks
+	// to determine which is most appropriate for their use case.
+	UseStandardMutex bool
 
 	// HandleEvent handles emitted events, such as when a log compaction has
 	// begun, succeeded, or failed. When nil, all events are dropped.
@@ -83,7 +88,7 @@ func DefaultConfig() Config {
 		MaxValueSize:         defaultMaxValueSize,
 		MaxFileSize:          defaultMaxFileSize,
 		ManualCompactionOnly: false,
-		UseRWLock:            false,
+		UseStandardMutex:     false,
 		HandleEvent:          func(event any) {},
 	}
 }

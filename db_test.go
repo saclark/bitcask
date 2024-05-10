@@ -185,7 +185,6 @@ func TestGet_WhileCompacting(t *testing.T) {
 	config.MaxKeySize = 1
 	config.MaxValueSize = vsize
 	config.MaxFileSize = 1 + vsize + 20
-	config.UseRWLock = true
 
 	var compactErrs []error
 	config.HandleEvent = func(event any) {

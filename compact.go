@@ -14,8 +14,8 @@ import (
 // data file reaches the maximum size given by [Config.MaxFileSize]. However,
 // this method allows callers to manually trigger a switchover at will.
 func (db *DB) Switchover() error {
-	db.rwmu.Lock()
-	defer db.rwmu.Unlock()
+	db.mu.Lock()
+	defer db.mu.Unlock()
 	if db.closed {
 		return ErrDatabaseClosed
 	}
@@ -72,12 +72,12 @@ func (db *DB) switchover() (err error) {
 // size given by [Config.MaxFileSize]. However, this method allows callers to
 // manually trigger a log compaction at will.
 func (db *DB) Compact() (bool, error) {
-	db.rwmu.RLock()
+	db.mu.RLock()
 	if db.closed {
-		db.rwmu.RUnlock()
+		db.mu.RUnlock()
 		return false, ErrDatabaseClosed
 	}
-	db.rwmu.RUnlock()
+	db.mu.RUnlock()
 
 	c := make(chan error)
 	ok := db.triggerLogCompaction(c)
@@ -118,8 +118,8 @@ func (db *DB) serveLogCompaction() {
 }
 
 func (db *DB) compact() error {
-	db.rwmu.Lock()
-	defer db.rwmu.Unlock()
+	db.mu.Lock()
+	defer db.mu.Unlock()
 
 	db.emit("log compaction: started")
 

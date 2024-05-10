@@ -52,7 +52,7 @@ type DB struct {
 	fwOffset    int64                   // Active data file current offset.
 	frIndex     map[fileID]*os.File     // Set of data files opened for reading.
 	kvIndex     map[string]indexedValue // key-value index.
-	rwmu        rwLocker
+	mu          rwLocker
 	compactChan chan chan error
 	closeChan   chan struct{}
 	closed      bool
@@ -191,11 +191,11 @@ func Open(path string, config Config) (*DB, error) {
 		return nil, fmt.Errorf("statting active data file opened for writing: %v", err)
 	}
 
-	var rwmu rwLocker
-	if config.UseRWLock {
-		rwmu = &stdMutex{}
+	var mu rwLocker
+	if config.UseStandardMutex {
+		mu = &stdMutex{}
 	} else {
-		rwmu = &sync.RWMutex{}
+		mu = &sync.RWMutex{}
 	}
 
 	db := &DB{
@@ -208,7 +208,7 @@ func Open(path string, config Config) (*DB, error) {
 		fwOffset:    info.Size(),
 		frIndex:     frIndex,
 		kvIndex:     kvIndex,
-		rwmu:        rwmu,
+		mu:          mu,
 		compactChan: make(chan chan error),
 		closeChan:   make(chan struct{}),
 	}
@@ -239,8 +239,8 @@ func (db *DB) Get(key string) ([]byte, error) {
 }
 
 func (db *DB) indexGet(key string) (indexedValue, io.ReaderAt, error) {
-	db.rwmu.RLock()
-	defer db.rwmu.RUnlock()
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 	if db.closed {
 		return indexedValue{}, nil, ErrDatabaseClosed
 	}
@@ -260,8 +260,8 @@ func (db *DB) Put(key string, value []byte) error {
 		return ErrValueTooLarge
 	}
 
-	db.rwmu.Lock()
-	defer db.rwmu.Unlock()
+	db.mu.Lock()
+	defer db.mu.Unlock()
 
 	if db.closed {
 		return ErrDatabaseClosed
@@ -308,8 +308,8 @@ func (db *DB) put(key string, value []byte) error {
 
 // Delete deletes the key-value pair associated with key.
 func (db *DB) Delete(key string) error {
-	db.rwmu.Lock()
-	defer db.rwmu.Unlock()
+	db.mu.Lock()
+	defer db.mu.Unlock()
 	if db.closed {
 		return ErrDatabaseClosed
 	}
@@ -322,8 +322,8 @@ func (db *DB) Delete(key string) error {
 // Keys iterates over all keys, passing each key to f and terminating when f
 // returns false or all keys have been enumerated.
 func (db *DB) EachKey(f func(key string) bool) error {
-	db.rwmu.RLock()
-	defer db.rwmu.RUnlock()
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 	if db.closed {
 		return ErrDatabaseClosed
 	}
@@ -339,8 +339,8 @@ func (db *DB) EachKey(f func(key string) bool) error {
 // Typically, this means flushing the file system's in-memory copy of recently
 // written data to disk.
 func (db *DB) Sync() error {
-	db.rwmu.Lock()
-	defer db.rwmu.Unlock()
+	db.mu.Lock()
+	defer db.mu.Unlock()
 	if db.closed {
 		return ErrDatabaseClosed
 	}
@@ -355,9 +355,9 @@ func (db *DB) Sync() error {
 // to Close or other methods such as [DB.Get] or [DB.Put] will return
 // [ErrDatabaseClosed].
 func (db *DB) Close() error {
-	db.rwmu.Lock()
+	db.mu.Lock()
 	if db.closed {
-		db.rwmu.Unlock()
+		db.mu.Unlock()
 		return ErrDatabaseClosed
 	}
 
@@ -366,7 +366,7 @@ func (db *DB) Close() error {
 	// order to wait for any log compaction job waiting to obtain a lock to
 	// complete refore we return.
 	defer func() { db.closeChan <- struct{}{} }()
-	defer db.rwmu.Unlock()
+	defer db.mu.Unlock()
 
 	db.closed = true
 
