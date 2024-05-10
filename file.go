@@ -43,22 +43,22 @@ func syncAndClose(f *os.File) error {
 // segments with higher segmentIDs.
 type segmentID uint64
 
-// Compacted returns whether the fileID represents a compacted segment.
+// Compacted returns whether the segmentID represents a compacted segment.
 func (id segmentID) Compacted() bool {
 	return id < minUncompactedSegmentID
 }
 
-// Inc increments the fileID by 1 and panics if doing so would cross over either
-// of the compacted/uncompacted fileID boundaries.
+// Inc increments the segmentID by 1 and panics if doing so would cross over
+// either of the compacted/uncompacted segmentID boundaries.
 func (id segmentID) Inc() segmentID {
 	n := id + 1
 	if n == minCompactedSegmentID || n == minUncompactedSegmentID {
-		panic("fileID overflow")
+		panic("segmentID overflow")
 	}
 	return n
 }
 
-// Filename returns the filename corresponding to the fileID.
+// Filename returns the filename corresponding to the segmentID.
 //
 // It is formatted such that the lexicographical ordering of segment filenames
 // should match the numerical ordering of their corresponding segmentIDs.
@@ -68,9 +68,9 @@ func (id segmentID) Filename() string {
 
 func (db *DB) nextCompactedSegmentID() segmentID {
 	max := minCompactedSegmentID
-	for fid := range db.frIndex {
-		if fid.Compacted() && fid > max {
-			max = fid
+	for sid := range db.frIndex {
+		if sid.Compacted() && sid > max {
+			max = sid
 		}
 	}
 	return max.Inc()
@@ -78,9 +78,9 @@ func (db *DB) nextCompactedSegmentID() segmentID {
 
 func (db *DB) nextUncompactedSegmentID() segmentID {
 	max := minUncompactedSegmentID
-	for fid := range db.frIndex {
-		if !fid.Compacted() && fid > max {
-			max = fid
+	for sid := range db.frIndex {
+		if !sid.Compacted() && sid > max {
+			max = sid
 		}
 	}
 	return max.Inc()

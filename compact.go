@@ -71,20 +71,20 @@ func (db *DB) compact() error {
 		return nil
 	}
 
-	var firstNewCompactedFileID segmentID
-	activeFileID := db.fwID
+	var firstNewCompactedSegmentID segmentID
+	activeSegmentID := db.fwID
 
-	var fid segmentID
+	var sid segmentID
 	var fw *os.File
 	var offset int64
 	for k, v := range db.kvIndex {
 		// Skip any values persisted to the active segment or later at the time
 		// this log compaction was kicked off.
-		if v.FileID >= activeFileID {
+		if v.SegmentID >= activeSegmentID {
 			continue
 		}
 
-		vfr, ok := db.frIndex[v.FileID]
+		vfr, ok := db.frIndex[v.SegmentID]
 		if !ok {
 			continue
 		}
@@ -94,15 +94,15 @@ func (db *DB) compact() error {
 
 		// Create a new segment if necessary.
 		if fw == nil || offset+recordSize > db.cfg.MaxSegmentSize {
-			fid = db.nextCompactedSegmentID()
-			fn := fid.Filename()
+			sid = db.nextCompactedSegmentID()
+			fn := sid.Filename()
 
 			if fw != nil {
 				if err := syncAndClose(fw); err != nil {
 					return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
 				}
 			} else {
-				firstNewCompactedFileID = fid
+				firstNewCompactedSegmentID = sid
 			}
 
 			var err error
@@ -117,7 +117,7 @@ func (db *DB) compact() error {
 				return fmt.Errorf("opening new compacted segment file for reading: %v", err)
 			}
 
-			db.frIndex[fid] = fr
+			db.frIndex[sid] = fr
 			offset = 0
 		}
 
@@ -132,7 +132,7 @@ func (db *DB) compact() error {
 		offset += written
 
 		// Update the index.
-		v.FileID = fid
+		v.SegmentID = sid
 		v.Offset = offset - int64(v.Size)
 		db.kvIndex[k] = v
 	}
@@ -143,9 +143,9 @@ func (db *DB) compact() error {
 		}
 	}
 
-	for fid, fr := range db.frIndex {
-		if fid < firstNewCompactedFileID || (!fid.Compacted() && fid < activeFileID) {
-			delete(db.frIndex, fid)
+	for sid, fr := range db.frIndex {
+		if sid < firstNewCompactedSegmentID || (!sid.Compacted() && sid < activeSegmentID) {
+			delete(db.frIndex, sid)
 			_ = fr.Close()           // ignore error, read-only file
 			_ = os.Remove(fr.Name()) // ignore error
 		}

@@ -35,9 +35,9 @@ func (l *stdMutex) RUnlock() { l.Unlock() }
 // indexedValue specifies all necessary information to efficiently retrieve a
 // value from the WAL.
 type indexedValue struct {
-	FileID segmentID
-	Offset int64
-	Size   int
+	SegmentID segmentID
+	Offset    int64
+	Size      int
 }
 
 // DB implements a high-performance, persistent key-value store. It is safe for
@@ -91,9 +91,9 @@ func Open(path string, config Config) (*DB, error) {
 		return nil, fmt.Errorf("finding segment files in directory: %v", err)
 	}
 
-	// Parse the filenames as file IDs and sort them. The active segment has the
-	// largest ID.
-	var fids []segmentID
+	// Parse the filenames as segmentIDs and sort them. The active segment has
+	// the largest ID.
+	var sids []segmentID
 	for _, fn := range fns {
 		fn = filepath.Base(fn)
 		ext := filepath.Ext(fn)
@@ -104,20 +104,20 @@ func Open(path string, config Config) (*DB, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid segment filename: %s", fn)
 		}
-		fids = append(fids, segmentID(id))
+		sids = append(sids, segmentID(id))
 	}
 
-	sort.Slice(fids, func(i, j int) bool {
-		return fids[i] < fids[j]
+	sort.Slice(sids, func(i, j int) bool {
+		return sids[i] < sids[j]
 	})
 
 	// Open the active segment file for writing, creating a new one if none
 	// exist.
-	if len(fids) == 0 {
-		fids = append(fids, minUncompactedSegmentID.Inc())
+	if len(sids) == 0 {
+		sids = append(sids, minUncompactedSegmentID.Inc())
 	}
 
-	fwID := fids[len(fids)-1]
+	fwID := sids[len(sids)-1]
 	fw, err := os.OpenFile(
 		filepath.Join(path, fwID.Filename()),
 		segFileFlag,
@@ -128,17 +128,17 @@ func Open(path string, config Config) (*DB, error) {
 	}
 
 	// Open and index all segment files.
-	frIndex := make(map[segmentID]*os.File, len(fids))
+	frIndex := make(map[segmentID]*os.File, len(sids))
 	kvIndex := make(map[string]indexedValue)
 
-	for _, fid := range fids {
-		fr, err := os.Open(filepath.Join(path, fid.Filename()))
+	for _, sid := range sids {
+		fr, err := os.Open(filepath.Join(path, sid.Filename()))
 		if err != nil {
 			_ = fw.Close() // ignore error, nothing was written to it
 			return nil, fmt.Errorf("opening segment file for reading: %v", err)
 		}
 
-		frIndex[fid] = fr
+		frIndex[sid] = fr
 
 		// Index the segment.
 		dec := newWALRecordDecoder(fr)
@@ -170,9 +170,9 @@ func Open(path string, config Config) (*DB, error) {
 
 			k := string(rec.Key)
 			v := indexedValue{
-				FileID: fid,
-				Offset: offset - int64(len(rec.Value)),
-				Size:   len(rec.Value),
+				SegmentID: sid,
+				Offset:    offset - int64(len(rec.Value)),
+				Size:      len(rec.Value),
 			}
 
 			if len(rec.Value) == 0 {
@@ -249,7 +249,7 @@ func (db *DB) indexGet(key string) (indexedValue, io.ReaderAt, error) {
 	if !ok {
 		return indexedValue{}, nil, ErrKeyNotFound
 	}
-	return v, db.frIndex[v.FileID], nil
+	return v, db.frIndex[v.SegmentID], nil
 }
 
 // Put inserts or overwrites the value associated with key.
@@ -293,9 +293,9 @@ func (db *DB) put(key string, value []byte) error {
 	db.fwOffset += n
 
 	v := indexedValue{
-		FileID: db.fwID,
-		Offset: db.fwOffset - int64(len(rec.Value)),
-		Size:   len(rec.Value),
+		SegmentID: db.fwID,
+		Offset:    db.fwOffset - int64(len(rec.Value)),
+		Size:      len(rec.Value),
 	}
 
 	if len(value) == 0 {

@@ -24,8 +24,8 @@ func (db *DB) RotateSegment() error {
 // rotateSegment causes the database to begin writing to a new active segment.
 // Callers must take care to Lock() before calling this method.
 func (db *DB) rotateSegment() (err error) {
-	fid := db.nextUncompactedSegmentID()
-	fpath := filepath.Join(db.dir, fid.Filename())
+	sid := db.nextUncompactedSegmentID()
+	fpath := filepath.Join(db.dir, sid.Filename())
 
 	var fw, fr *os.File
 	fw, err = os.OpenFile(fpath, segFileFlag, segFileMode)
@@ -56,8 +56,8 @@ func (db *DB) rotateSegment() (err error) {
 	db.fw = fw
 	db.fwEncoder = newWALRecordEncoder(fw)
 	db.fwOffset = 0
-	db.fwID = fid
-	db.frIndex[fid] = fr
+	db.fwID = sid
+	db.frIndex[sid] = fr
 
 	return nil
 }
