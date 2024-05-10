@@ -18,8 +18,8 @@ const (
 	headerSize = vszOff + 4
 )
 
-// dataRecord represents the data written to a data file for a single key-value
-// pair.
+// dataRecord represents the data written to a segment file for a single
+// key-value pair.
 type dataRecord struct {
 	CRC       uint32
 	Timestamp uint64
@@ -37,7 +37,7 @@ func newDataRecord(key []byte, value []byte) dataRecord {
 	}
 }
 
-// Size returns the byte size of the full dataRecord when written to the data
+// Size returns the byte size of the full dataRecord when written to the segment
 // file.
 func (r *dataRecord) Size() int64 {
 	return headerSize + int64(len(r.Key)) + int64(len(r.Value))

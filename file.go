@@ -7,15 +7,15 @@ import (
 )
 
 const (
-	lockFilename         = "~.lock"
-	dfFileExt            = ".data"
-	lockFileFlag         = os.O_CREATE | os.O_EXCL
-	dfFileFlag           = os.O_CREATE | os.O_APPEND | os.O_WRONLY
-	dbDirMode            = fs.FileMode(0755) // rwxr-xr-x
-	lockFileMode         = fs.FileMode(0644) // rw-r--r--
-	dfFileMode           = fs.FileMode(0644) // rw-r--r--
-	minCompactedFileID   = fileID(0x00)
-	minUncompactedFileID = fileID(0x8000000)
+	lockFilename            = "~.lock"
+	segFileExt              = ".seg"
+	lockFileFlag            = os.O_CREATE | os.O_EXCL
+	segFileFlag             = os.O_CREATE | os.O_APPEND | os.O_WRONLY
+	dbDirMode               = fs.FileMode(0755) // rwxr-xr-x
+	lockFileMode            = fs.FileMode(0644) // rw-r--r--
+	segFileMode             = fs.FileMode(0644) // rw-r--r--
+	minCompactedSegmentID   = segmentID(0x00)
+	minUncompactedSegmentID = segmentID(0x8000000)
 )
 
 func syncAndClose(f *os.File) error {
@@ -29,29 +29,30 @@ func syncAndClose(f *os.File) error {
 	return nil
 }
 
-// fileID is a unique identifier for a data file.
+// segmentID is a unique identifier for a segment.
 //
 // The most significant bit is used to differentiate between compacted and
-// uncompacted data files, with 0 denoting a compacted data file and 1 denoting
-// an uncompacted data file.
+// uncompacted segments, with 0 denoting a compacted segment and 1 denoting an
+// uncompacted segment.
 //
 // This means values in the ranges [0x00, 0x8000000) and
-// [0x8000000, 0xFFFFFFFFFFFFFFFF) represent compacted and uncompacted data
-// files, respectively.
+// [0x8000000, 0xFFFFFFFFFFFFFFFF) represent compacted and uncompacted segments,
+// respectively.
 //
-// Lower fileIDs should be loaded, or "replayed", before higher fileIDs.
-type fileID uint64
+// Segments with lower segmentIDs should be loaded, or "replayed", before
+// segments with higher segmentIDs.
+type segmentID uint64
 
-// Compacted returns whether the fileID represents a compacted data file.
-func (id fileID) Compacted() bool {
-	return id < minUncompactedFileID
+// Compacted returns whether the fileID represents a compacted segment.
+func (id segmentID) Compacted() bool {
+	return id < minUncompactedSegmentID
 }
 
 // Inc increments the fileID by 1 and panics if doing so would cross over either
 // of the compacted/uncompacted fileID boundaries.
-func (id fileID) Inc() fileID {
+func (id segmentID) Inc() segmentID {
 	n := id + 1
-	if n == minCompactedFileID || n == minUncompactedFileID {
+	if n == minCompactedSegmentID || n == minUncompactedSegmentID {
 		panic("fileID overflow")
 	}
 	return n
@@ -59,14 +60,14 @@ func (id fileID) Inc() fileID {
 
 // Filename returns the filename corresponding to the fileID.
 //
-// It is formatted such that the lexicographical ordering of data file filenames
-// should match the numerical ordering of their corresponding fileIDs.
-func (id fileID) Filename() string {
-	return fmt.Sprintf("%020d", id) + dfFileExt
+// It is formatted such that the lexicographical ordering of segment filenames
+// should match the numerical ordering of their corresponding segmentIDs.
+func (id segmentID) Filename() string {
+	return fmt.Sprintf("%020d", id) + segFileExt
 }
 
-func (db *DB) nextCompactedFileID() fileID {
-	max := minCompactedFileID
+func (db *DB) nextCompactedSegmentID() segmentID {
+	max := minCompactedSegmentID
 	for fid := range db.frIndex {
 		if fid.Compacted() && fid > max {
 			max = fid
@@ -75,8 +76,8 @@ func (db *DB) nextCompactedFileID() fileID {
 	return max.Inc()
 }
 
-func (db *DB) nextUncompactedFileID() fileID {
-	max := minUncompactedFileID
+func (db *DB) nextUncompactedSegmentID() segmentID {
+	max := minUncompactedSegmentID
 	for fid := range db.frIndex {
 		if !fid.Compacted() && fid > max {
 			max = fid

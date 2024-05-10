@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 )
 
-// Switchover causes the database to begin writing to a new active data file,
-// marking the prior active data file eligible for compaction.
+// Switchover causes the database to begin writing to a new active segment,
+// marking the prior active segment eligible for compaction.
 //
-// Active data file switchover already happens automatically when the active
-// data file reaches the maximum size given by [Config.MaxFileSize]. However,
+// Active segment switchover already happens automatically when the active
+// segment reaches the maximum size given by [Config.MaxSegmentSize]. However,
 // this method allows callers to manually trigger a switchover at will.
 func (db *DB) Switchover() error {
 	db.mu.Lock()
@@ -22,16 +22,16 @@ func (db *DB) Switchover() error {
 	return db.switchover()
 }
 
-// switchover switches the database to write to a new active data file. Callers
+// switchover switches the database to write to a new active segment. Callers
 // must take care to Lock() before calling this method.
 func (db *DB) switchover() (err error) {
-	fid := db.nextUncompactedFileID()
+	fid := db.nextUncompactedSegmentID()
 	fpath := filepath.Join(db.dir, fid.Filename())
 
 	var fw, fr *os.File
-	fw, err = os.OpenFile(fpath, dfFileFlag, dfFileMode)
+	fw, err = os.OpenFile(fpath, segFileFlag, segFileMode)
 	if err != nil {
-		return fmt.Errorf("opening new active data file for writing: %v", err)
+		return fmt.Errorf("opening new active segment file for writing: %v", err)
 	}
 
 	// Attempt to close and remove files if an error occurs.
@@ -47,11 +47,11 @@ func (db *DB) switchover() (err error) {
 
 	fr, err = os.Open(fpath)
 	if err != nil {
-		return fmt.Errorf("opening new active data file for reading: %v", err)
+		return fmt.Errorf("opening new active segment file for reading: %v", err)
 	}
 
 	if err := syncAndClose(db.fw); err != nil {
-		return fmt.Errorf("syncing and closing active data file opened for writing: %v", err)
+		return fmt.Errorf("syncing and closing active segment file opened for writing: %v", err)
 	}
 
 	db.fw = fw
@@ -68,9 +68,9 @@ func (db *DB) switchover() (err error) {
 // encountered. Otherwise, it immediately returns false and the error is nil.
 //
 // Unless [Config.ManualCompactionOnly] is true, log compaction already runs
-// automatically in the background when the active data file reaches the maximum
-// size given by [Config.MaxFileSize]. However, this method allows callers to
-// manually trigger a log compaction at will.
+// automatically in the background when the active segment reaches the
+// maximum size given by [Config.MaxSegmentSize]. However, this method allows
+// callers to manually trigger a log compaction at will.
 func (db *DB) Compact() (bool, error) {
 	db.mu.RLock()
 	if db.closed {
@@ -127,15 +127,15 @@ func (db *DB) compact() error {
 		return nil
 	}
 
-	var firstNewCompactedFileID fileID
+	var firstNewCompactedFileID segmentID
 	activeFileID := db.fwID
 
-	var fid fileID
+	var fid segmentID
 	var fw *os.File
 	var offset int64
 	for k, v := range db.kvIndex {
-		// Skip any values persisted to the active data file or later at the
-		// time this log compaction was kicked off.
+		// Skip any values persisted to the active segment or later at the time
+		// this log compaction was kicked off.
 		if v.FileID >= activeFileID {
 			continue
 		}
@@ -148,41 +148,41 @@ func (db *DB) compact() error {
 		headerAndKeySize := headerSize + int64(len(k))
 		recordSize := headerAndKeySize + int64(v.Size)
 
-		// Create a new data file if necessary.
-		if fw == nil || offset+recordSize > db.cfg.MaxFileSize {
-			fid = db.nextCompactedFileID()
+		// Create a new segment if necessary.
+		if fw == nil || offset+recordSize > db.cfg.MaxSegmentSize {
+			fid = db.nextCompactedSegmentID()
 			fn := fid.Filename()
 
 			if fw != nil {
 				if err := syncAndClose(fw); err != nil {
-					return fmt.Errorf("syncing and closing compacted data file opened for writing: %v", err)
+					return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
 				}
 			} else {
 				firstNewCompactedFileID = fid
 			}
 
 			var err error
-			fw, err = os.OpenFile(filepath.Join(db.dir, fn), dfFileFlag, dfFileMode)
+			fw, err = os.OpenFile(filepath.Join(db.dir, fn), segFileFlag, segFileMode)
 			if err != nil {
-				return fmt.Errorf("opening new compacted data file for writing: %v", err)
+				return fmt.Errorf("opening new compacted segment file for writing: %v", err)
 			}
 
 			fr, err := os.Open(filepath.Join(db.dir, fn))
 			if err != nil {
 				_ = fw.Close() // ignore error, nothing was written to it
-				return fmt.Errorf("opening new compacted data file for reading: %v", err)
+				return fmt.Errorf("opening new compacted segment file for reading: %v", err)
 			}
 
 			db.frIndex[fid] = fr
 			offset = 0
 		}
 
-		// Copy the record to the new compacted data file.
+		// Copy the record to the new compacted segment.
 		r := io.NewSectionReader(vfr, v.Offset-headerAndKeySize, recordSize)
 		written, err := io.Copy(fw, r)
 		if err != nil {
 			_ = syncAndClose(fw) // TODO: Don't ignore this error if it was a Sync error.
-			return fmt.Errorf("copying record to new compacted data file: %v", err)
+			return fmt.Errorf("copying record to new compacted segment file: %v", err)
 		}
 
 		offset += written
@@ -195,7 +195,7 @@ func (db *DB) compact() error {
 
 	if fw != nil {
 		if err := syncAndClose(fw); err != nil {
-			return fmt.Errorf("syncing and closing compacted data file opened for writing: %v", err)
+			return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
 		}
 	}
 

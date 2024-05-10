@@ -74,7 +74,7 @@ func TestDB_SingleThreaded(t *testing.T) {
 	config := DefaultConfig()
 	config.MaxKeySize = 4
 	config.MaxValueSize = 8
-	config.MaxFileSize = 64
+	config.MaxSegmentSize = 64
 	config.HandleEvent = func(event any) {
 		switch ev := event.(type) {
 		case error:
@@ -90,12 +90,12 @@ func TestDB_SingleThreaded(t *testing.T) {
 	}
 	defer os.RemoveAll(path)
 
-	dfs, err := filepath.Glob(filepath.Join(path, "*.data"))
+	segs, err := filepath.Glob(filepath.Join(path, "*.seg"))
 	if err != nil {
 		t.Fatalf("reading directory: %v", err)
 	}
-	if want := 1; len(dfs) != want {
-		t.Fatalf("want %d file, got %d", want, len(dfs))
+	if want := 1; len(segs) != want {
+		t.Fatalf("want %d file, got %d", want, len(segs))
 	}
 
 	ops := []struct {
@@ -133,23 +133,23 @@ func TestDB_SingleThreaded(t *testing.T) {
 		t.Fatalf("closing DB: %v", err)
 	}
 
-	dfs, err = filepath.Glob(filepath.Join(path, "*.data"))
+	segs, err = filepath.Glob(filepath.Join(path, "*.seg"))
 	if err != nil {
 		t.Fatalf("reading directory: %v", err)
 	}
 
 	// TODO: This may be flaky. Depends on the timing of when the log compaction goroutine gets scheduled.
-	if want := 3; len(dfs) != want {
-		t.Fatalf("want %d files, got %d", want, len(dfs))
+	if want := 3; len(segs) != want {
+		t.Fatalf("want %d files, got %d", want, len(segs))
 	}
 
-	for _, df := range dfs {
-		info, err := os.Stat(df)
+	for _, seg := range segs {
+		info, err := os.Stat(seg)
 		if err != nil {
 			t.Fatalf("statting %s: %v", info.Name(), err)
 		}
-		if info.Size() > config.MaxFileSize {
-			t.Fatalf("%s: want size <= %d, got size: %d", info.Name(), config.MaxFileSize, info.Size())
+		if info.Size() > config.MaxSegmentSize {
+			t.Fatalf("%s: want size <= %d, got size: %d", info.Name(), config.MaxSegmentSize, info.Size())
 		}
 	}
 
@@ -184,7 +184,7 @@ func TestGet_WhileCompacting(t *testing.T) {
 	config := DefaultConfig()
 	config.MaxKeySize = 1
 	config.MaxValueSize = vsize
-	config.MaxFileSize = 1 + vsize + 20
+	config.MaxSegmentSize = 1 + vsize + 20
 
 	var compactErrs []error
 	config.HandleEvent = func(event any) {
@@ -271,12 +271,12 @@ func TestGet_InvalidRecord(t *testing.T) {
 		t.Fatalf("want %s, got %s", v2, got)
 	}
 
-	fnames, err := filepath.Glob(filepath.Join(path, "*.data"))
+	fnames, err := filepath.Glob(filepath.Join(path, "*.seg"))
 	if err != nil {
 		t.Fatalf("globing dir: %v", err)
 	}
 	if len(fnames) != 1 {
-		t.Fatalf("want 1 data file, got %d", len(fnames))
+		t.Fatalf("want 1 segment file, got %d", len(fnames))
 	}
 
 	fname := fnames[0]
@@ -314,12 +314,12 @@ func TestDelete_NonexistentKey_DoesNotWriteTombstone(t *testing.T) {
 		}
 	}
 
-	dfs, err := filepath.Glob(filepath.Join(path, "*.data"))
+	segs, err := filepath.Glob(filepath.Join(path, "*.seg"))
 	if err != nil {
 		t.Fatalf("reading directory: %v", err)
 	}
-	for _, df := range dfs {
-		info, err := os.Stat(df)
+	for _, seg := range segs {
+		info, err := os.Stat(seg)
 		if err != nil {
 			t.Fatalf("getting file info: %v", err)
 		}

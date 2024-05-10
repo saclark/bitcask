@@ -17,8 +17,8 @@ var (
 )
 
 // LogCompactionError signifies that log compaction encountered an error. While
-// this means that a full compaction of the data files may not have completed,
-// the DB should still be in a consistent state.
+// this means that a full compaction of the segments may not have completed, the
+// DB should still be in a consistent state.
 type LogCompactionError struct {
 	err error
 }
