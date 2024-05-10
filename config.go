@@ -32,9 +32,9 @@ type Config struct {
 	// record.
 	MaxSegmentSize int64
 
-	// ManualCompactionOnly turns off automatic log compaction when true,
-	// requiring any log compaction to be triggered manually via [DB.Compact].
-	ManualCompactionOnly bool
+	// CompactManually turns off automatic log compaction when true, requiring
+	// any log compaction to be triggered manually via [DB.Compact].
+	CompactManually bool
 
 	// UseStandardMutex mandates the usage of a standard mutex for
 	// synchronization when true. A reader-writer lock is used when false.
@@ -83,11 +83,11 @@ func (c Config) hydrated() Config {
 // DefaultConfig is a [Config] with default values.
 func DefaultConfig() Config {
 	return Config{
-		MaxKeySize:           defaultMaxKeySize,
-		MaxValueSize:         defaultMaxValueSize,
-		MaxSegmentSize:       defaultMaxSegmentSize,
-		ManualCompactionOnly: false,
-		UseStandardMutex:     false,
-		HandleEvent:          func(event any) {},
+		MaxKeySize:       defaultMaxKeySize,
+		MaxValueSize:     defaultMaxValueSize,
+		MaxSegmentSize:   defaultMaxSegmentSize,
+		CompactManually:  false,
+		UseStandardMutex: false,
+		HandleEvent:      func(event any) {},
 	}
 }

@@ -275,7 +275,7 @@ func (db *DB) Put(key string, value []byte) error {
 // take care to Lock() before calling this method.
 func (db *DB) put(key string, value []byte) error {
 	rec := newWALRecord([]byte(key), value)
-	if db.fwOffset+rec.Size() > db.cfg.MaxSegmentSize && !db.cfg.ManualCompactionOnly {
+	if db.fwOffset+rec.Size() > db.cfg.MaxSegmentSize && !db.cfg.CompactManually {
 		if err := db.switchover(); err != nil {
 			return fmt.Errorf("switching over to new active segment file: %w", err)
 		}
