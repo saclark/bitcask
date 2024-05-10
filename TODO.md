@@ -3,7 +3,7 @@
 * [ ] Produce .index files during merge use them to Open DB.
 * [ ] Allow DB to be opened in read-only mode.
 * [ ] Consider performing merge in a way that blocks less (e.g. don't iterate kvIndex, parse keys from segment files).
-* [ ] switchover() before returning ErrPartialWrite, but how to handle if switchover() fails also?
+* [ ] rotateSegment() before returning ErrPartialWrite, but how to handle if rotateSegment() fails also?
 * [ ] Cleanup/improve errors (messages, data, which to export, etc.).
     * [ ] Create an InvalidConfigError type?
 * [ ] What to do if a file Sync() errs?

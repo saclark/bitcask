@@ -519,8 +519,8 @@ func TestClose_DBMethodsReturnErrDatabaseClosed(t *testing.T) {
 	if err := db.EachKey(func(key string) bool { return false }); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("EachKey: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
-	if err := db.Switchover(); !errors.Is(err, ErrDatabaseClosed) {
-		t.Errorf("Switchover: want '%v', got '%v'", ErrDatabaseClosed, err)
+	if err := db.RotateSegment(); !errors.Is(err, ErrDatabaseClosed) {
+		t.Errorf("RotateSegment: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
 	if _, err := db.Compact(); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("Compact: want '%v', got '%v'", ErrDatabaseClosed, err)

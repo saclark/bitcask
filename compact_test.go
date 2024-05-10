@@ -31,7 +31,7 @@ func TestLogCompaction_AllEligibleDataOutOfDate_OnlyActiveSegmentOrLaterRemains(
 
 	assertOp(t, db, "Put", "aaaa", []byte("0000"), nil) // Segment = 28 bytes, index = {"aaaa"}
 	assertOp(t, db, "Del", "aaaa", nil, nil)            // Segment = 52 bytes, index = {}
-	assertOp(t, db, "Put", "bbbb", []byte("1111"), nil) // Triggers switchover and compaction of previous segment.
+	assertOp(t, db, "Put", "bbbb", []byte("1111"), nil) // Triggers segment rotation and compaction of previous segment.
 
 	<-c // wait for the log compaction to begin so Close does not preempt it.
 	if err := db.Close(); err != nil {
