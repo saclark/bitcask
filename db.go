@@ -145,7 +145,9 @@ func Open(path string, config Config) (*DB, error) {
 		var offset int64
 		for {
 			var rec walRecord
-			if err := dec.Decode(&rec); err != nil {
+			n, err := dec.Decode(&rec)
+			offset += n
+			if err != nil {
 				if errors.Is(err, io.EOF) {
 					break
 				}
@@ -165,8 +167,6 @@ func Open(path string, config Config) (*DB, error) {
 				_ = fr.Close() // ignore error, read-only file
 				return nil, ErrInvalidRecord
 			}
-
-			offset += rec.Size()
 
 			k := string(rec.Key)
 			v := indexedValue{

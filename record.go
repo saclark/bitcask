@@ -119,24 +119,31 @@ func newWALRecordDecoder(r io.Reader) *walRecordDecoder {
 
 // Decode reads the next encoded [walRecord] value from its input and stores it
 // in the value pointed to by rec.
-func (d *walRecordDecoder) Decode(rec *walRecord) (err error) {
+func (d *walRecordDecoder) Decode(rec *walRecord) (n int64, err error) {
+	// If there is an error, reset the buffered reader and adjust n to reflect
+	// the number of bytes actually read from the underlying reader.
 	defer func() {
 		if err != nil {
+			n = n + int64(d.br.Buffered())
 			d.br.Reset(d.r)
 		}
 	}()
 
 	header := make([]byte, headerSize)
-	if _, err = io.ReadFull(d.br, header); err != nil {
-		return err
+	nn, err := io.ReadFull(d.br, header)
+	n += int64(nn)
+	if err != nil {
+		return n, err
 	}
 
 	ksz := binary.BigEndian.Uint32(header[kszOff:vszOff])
 	vsz := binary.BigEndian.Uint32(header[vszOff:headerSize])
 
 	data := make([]byte, ksz+vsz)
-	if _, err = io.ReadFull(d.br, data); err != nil {
-		return err
+	nn, err = io.ReadFull(d.br, data)
+	n += int64(nn)
+	if err != nil {
+		return n, err
 	}
 
 	rec.CRC = binary.BigEndian.Uint32(header[crcOff:tsOff])
@@ -144,5 +151,5 @@ func (d *walRecordDecoder) Decode(rec *walRecord) (err error) {
 	rec.Key = data[:ksz]
 	rec.Value = data[ksz : ksz+vsz]
 
-	return nil
+	return n, nil
 }

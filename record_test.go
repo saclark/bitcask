@@ -24,7 +24,7 @@ func BenchmarkDecoder(b *testing.B) {
 		b.StopTimer()
 		dec := newWALRecordDecoder(bytes.NewBuffer(data))
 		b.StartTimer()
-		if err := dec.Decode(&walRecord{}); err != nil {
+		if _, err := dec.Decode(&walRecord{}); err != nil {
 			b.Fatal(err)
 		}
 	}
