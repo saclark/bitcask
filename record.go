@@ -66,12 +66,11 @@ func (e *walRecordEncoder) Encode(rec walRecord) (n int64, err error) {
 	// the number of bytes actually flushed to the underlying writer.
 	defer func() {
 		if err != nil {
-			flushed := n - int64(e.bw.Buffered())
-			e.bw.Reset(e.w)
-			if flushed < 0 {
+			n = n - int64(e.bw.Buffered())
+			if n < 0 {
 				n = 0
 			}
-			n = flushed
+			e.bw.Reset(e.w)
 		}
 	}()
 
