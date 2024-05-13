@@ -283,14 +283,14 @@ func (db *DB) put(key string, value []byte) error {
 	}
 
 	n, err := db.fwEncoder.Encode(rec)
+	db.fwOffset += n
+
 	if err != nil {
 		if n == 0 {
 			return err
 		}
 		return ErrPartialWrite
 	}
-
-	db.fwOffset += n
 
 	v := indexedValue{
 		SegmentID: db.fwID,
