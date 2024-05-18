@@ -348,9 +348,9 @@ func (db *DB) Sync() error {
 	return db.fw.Sync()
 }
 
-// Close closes the database, syncing the active segment file, closing all open
-// file handles, and releasing it's lock on the database directory. It will not
-// return until log compaction has completed if one is running at the time.
+// Close closes the database. It syncs the active segment file, closes all open
+// file handles, and releases it's lock on the database directory. It blocks
+// until log compaction has completed if one is running at the time.
 //
 // Once Close has been called on a [DB], it may not be reused; future calls
 // to Close or other methods such as [DB.Get] or [DB.Put] will return
