@@ -17,9 +17,9 @@ import (
 // callers to manually trigger a log compaction at will.
 func (db *DB) Compact() (bool, error) {
 	db.mu.RLock()
-	if db.closed {
-		db.mu.RUnlock()
-		return false, ErrDatabaseClosed
+	if db.closed != nil {
+		defer db.mu.RUnlock()
+		return false, db.closed
 	}
 	db.mu.RUnlock()
 
@@ -67,7 +67,7 @@ func (db *DB) compact() error {
 
 	db.emit("log compaction: started")
 
-	if db.closed {
+	if db.closed != nil {
 		return nil
 	}
 

@@ -15,8 +15,8 @@ import (
 func (db *DB) RotateSegment() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	if db.closed {
-		return ErrDatabaseClosed
+	if db.closed != nil {
+		return db.closed
 	}
 	return db.rotateSegment()
 }

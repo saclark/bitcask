@@ -55,7 +55,7 @@ type DB struct {
 	mu          rwLocker
 	compactChan chan chan error
 	closeChan   chan struct{}
-	closed      bool
+	closed      error
 }
 
 // Open returns a [DB] using the directory at path to load and store data. If no
@@ -242,8 +242,8 @@ func (db *DB) Get(key string) ([]byte, error) {
 func (db *DB) indexGet(key string) (indexedValue, io.ReaderAt, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
-	if db.closed {
-		return indexedValue{}, nil, ErrDatabaseClosed
+	if db.closed != nil {
+		return indexedValue{}, nil, db.closed
 	}
 	v, ok := db.kvIndex[key]
 	if !ok {
@@ -264,8 +264,8 @@ func (db *DB) Put(key string, value []byte) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	if db.closed {
-		return ErrDatabaseClosed
+	if db.closed != nil {
+		return db.closed
 	}
 
 	return db.put(key, value)
@@ -311,8 +311,8 @@ func (db *DB) put(key string, value []byte) error {
 func (db *DB) Delete(key string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	if db.closed {
-		return ErrDatabaseClosed
+	if db.closed != nil {
+		return db.closed
 	}
 	if _, ok := db.kvIndex[key]; !ok {
 		return nil
@@ -325,8 +325,8 @@ func (db *DB) Delete(key string) error {
 func (db *DB) EachKey(f func(key string) bool) error {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
-	if db.closed {
-		return ErrDatabaseClosed
+	if db.closed != nil {
+		return db.closed
 	}
 	for k := range db.kvIndex {
 		if !f(k) {
@@ -342,8 +342,8 @@ func (db *DB) EachKey(f func(key string) bool) error {
 func (db *DB) Sync() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	if db.closed {
-		return ErrDatabaseClosed
+	if db.closed != nil {
+		return db.closed
 	}
 	return db.fw.Sync()
 }
@@ -357,9 +357,9 @@ func (db *DB) Sync() error {
 // [ErrDatabaseClosed].
 func (db *DB) Close() error {
 	db.mu.Lock()
-	if db.closed {
-		db.mu.Unlock()
-		return ErrDatabaseClosed
+	if db.closed != nil {
+		defer db.mu.Unlock()
+		return db.closed
 	}
 
 	// Signal the background goroutine to stop. This must be done *after*
@@ -369,7 +369,7 @@ func (db *DB) Close() error {
 	defer func() { db.closeChan <- struct{}{} }()
 	defer db.mu.Unlock()
 
-	db.closed = true
+	db.closed = ErrDatabaseClosed
 
 	if err := syncAndClose(db.fw); err != nil {
 		return fmt.Errorf("syncing and closing active segment file opened for writing: %w", err)
