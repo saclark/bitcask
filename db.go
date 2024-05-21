@@ -153,7 +153,9 @@ func Open(path string, config Config) (*DB, error) {
 				}
 
 				_ = fw.Close() // ignore error, nothing was written to it
-				_ = fr.Close() // ignore error, read-only file
+				for _, fr := range frIndex {
+					_ = fr.Close() // ignore error, read-only file
+				}
 
 				if errors.Is(err, io.ErrUnexpectedEOF) {
 					return nil, ErrTruncatedRecord
@@ -164,7 +166,9 @@ func Open(path string, config Config) (*DB, error) {
 
 			if !rec.Valid() {
 				_ = fw.Close() // ignore error, nothing was written to it
-				_ = fr.Close() // ignore error, read-only file
+				for _, fr := range frIndex {
+					_ = fr.Close() // ignore error, read-only file
+				}
 				return nil, ErrInvalidRecord
 			}
 
