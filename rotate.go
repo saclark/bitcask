@@ -57,7 +57,7 @@ func (db *DB) rotateSegment() (err error) {
 	db.fwEncoder = newWALRecordEncoder(fw)
 	db.fwOffset = 0
 	db.fwID = sid
-	db.frIndex[sid] = fr
+	db.frs[sid] = fr
 
 	return nil
 }

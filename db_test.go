@@ -285,7 +285,7 @@ func TestGet_InvalidRecord(t *testing.T) {
 		t.Fatalf("statting file: %v", err)
 	}
 
-	fsize := 20 + int64(len(k1)) + int64(len(v1)) + 20 + int64(len(k2)) + int64(len(v2))
+	fsize := 16 + int64(len(k1)) + int64(len(v1)) + 4 + 16 + int64(len(k2)) + int64(len(v2)) + 4
 	if info.Size() != fsize {
 		t.Fatalf("want file size %d, got %d", fsize, info.Size())
 	}

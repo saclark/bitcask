@@ -32,12 +32,11 @@ type stdMutex struct{ sync.Mutex }
 func (l *stdMutex) RLock()   { l.Lock() }
 func (l *stdMutex) RUnlock() { l.Unlock() }
 
-// indexedValue specifies all necessary information to efficiently retrieve a
-// value from the WAL.
-type indexedValue struct {
-	SegmentID segmentID
-	Offset    int64
-	Size      int
+// recordLoc specifies the location and size of a record.
+type recordLoc struct {
+	SegmentID segmentID // The ID of the segment in which the record is stored.
+	Offset    int64     // The byte offset at which the record is stored within the segment.
+	Size      int64     // The byte size of the record.
 }
 
 // DB implements a high-performance, persistent key-value store. It is safe for
@@ -46,12 +45,12 @@ type DB struct {
 	cfg         Config
 	dir         string
 	emit        func(any)
-	fw          *os.File                // Active segment opened for writing.
-	fwID        segmentID               // Active segment ID.
-	fwEncoder   *walRecordEncoder       // Active segment encoder.
-	fwOffset    int64                   // Active segment current offset.
-	frIndex     map[segmentID]*os.File  // Set of segments opened for reading.
-	kvIndex     map[string]indexedValue // key-value index.
+	fw          *os.File               // Active segment opened for writing.
+	fwID        segmentID              // Active segment ID.
+	fwEncoder   *walRecordEncoder      // Active segment encoder.
+	fwOffset    int64                  // Active segment current offset.
+	frs         map[segmentID]*os.File // Set of segments opened for reading.
+	index       map[string]recordLoc   // Records indexed by key.
 	mu          rwLocker
 	compactChan chan chan error
 	closeChan   chan struct{}
@@ -128,8 +127,8 @@ func Open(path string, config Config) (*DB, error) {
 	}
 
 	// Open and index all segment files.
-	frIndex := make(map[segmentID]*os.File, len(sids))
-	kvIndex := make(map[string]indexedValue)
+	frs := make(map[segmentID]*os.File, len(sids))
+	index := make(map[string]recordLoc)
 
 	for _, sid := range sids {
 		fr, err := os.Open(filepath.Join(path, sid.Filename()))
@@ -138,7 +137,7 @@ func Open(path string, config Config) (*DB, error) {
 			return nil, fmt.Errorf("opening segment file for reading: %v", err)
 		}
 
-		frIndex[sid] = fr
+		frs[sid] = fr
 
 		// Index the segment.
 		dec := newWALRecordDecoder(fr)
@@ -146,14 +145,13 @@ func Open(path string, config Config) (*DB, error) {
 		for {
 			var rec walRecord
 			n, err := dec.Decode(&rec)
-			offset += n
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					break
 				}
 
 				_ = fw.Close() // ignore error, nothing was written to it
-				for _, fr := range frIndex {
+				for _, fr := range frs {
 					_ = fr.Close() // ignore error, read-only file
 				}
 
@@ -164,33 +162,26 @@ func Open(path string, config Config) (*DB, error) {
 				return nil, fmt.Errorf("decoding record: %w", err)
 			}
 
-			if !rec.Valid() {
-				_ = fw.Close() // ignore error, nothing was written to it
-				for _, fr := range frIndex {
-					_ = fr.Close() // ignore error, read-only file
-				}
-				return nil, ErrInvalidRecord
-			}
-
 			k := string(rec.Key)
-			v := indexedValue{
-				SegmentID: sid,
-				Offset:    offset - int64(len(rec.Value)),
-				Size:      len(rec.Value),
-			}
 
 			if len(rec.Value) == 0 {
-				delete(kvIndex, k)
+				delete(index, k)
 			} else {
-				kvIndex[k] = v
+				index[k] = recordLoc{
+					SegmentID: sid,
+					Offset:    offset,
+					Size:      rec.Size(),
+				}
 			}
+
+			offset += n
 		}
 	}
 
 	info, err := fw.Stat()
 	if err != nil {
 		_ = fw.Close() // ignore error, nothing was written to it
-		for _, fr := range frIndex {
+		for _, fr := range frs {
 			_ = fr.Close() // ignore error, read-only file
 		}
 		return nil, fmt.Errorf("statting active segment file opened for writing: %v", err)
@@ -211,8 +202,8 @@ func Open(path string, config Config) (*DB, error) {
 		fwID:        fwID,
 		fwEncoder:   newWALRecordEncoder(fw),
 		fwOffset:    info.Size(),
-		frIndex:     frIndex,
-		kvIndex:     kvIndex,
+		frs:         frs,
+		index:       index,
 		mu:          mu,
 		compactChan: make(chan chan error),
 		closeChan:   make(chan struct{}),
@@ -227,33 +218,24 @@ func Open(path string, config Config) (*DB, error) {
 // Get gets the value associated with key. [ErrKeyNotFound] is returned if no
 // such key exists.
 func (db *DB) Get(key string) ([]byte, error) {
-	v, fr, err := db.indexGet(key)
+	rec, fr, err := db.indexGet(key)
 	if err != nil {
 		return nil, err
 	}
-
-	b := make([]byte, v.Size)
-	if _, err := fr.ReadAt(b, v.Offset); err != nil {
-		if errors.Is(err, io.EOF) {
-			return nil, ErrTruncatedRecord
-		}
-		return nil, err
-	}
-
-	return b, nil
+	return readRecordValue(fr, rec.Offset, rec.Size)
 }
 
-func (db *DB) indexGet(key string) (indexedValue, io.ReaderAt, error) {
+func (db *DB) indexGet(key string) (recordLoc, io.ReaderAt, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	if db.closed != nil {
-		return indexedValue{}, nil, db.closed
+		return recordLoc{}, nil, db.closed
 	}
-	v, ok := db.kvIndex[key]
+	rec, ok := db.index[key]
 	if !ok {
-		return indexedValue{}, nil, ErrKeyNotFound
+		return recordLoc{}, nil, ErrKeyNotFound
 	}
-	return v, db.frIndex[v.SegmentID], nil
+	return rec, db.frs[rec.SegmentID], nil
 }
 
 // Put inserts or overwrites the value associated with key.
@@ -287,8 +269,6 @@ func (db *DB) put(key string, value []byte) error {
 	}
 
 	n, err := db.fwEncoder.Encode(rec)
-	db.fwOffset += n
-
 	if err != nil {
 		if n == 0 {
 			return err
@@ -296,17 +276,17 @@ func (db *DB) put(key string, value []byte) error {
 		return ErrPartialWrite
 	}
 
-	v := indexedValue{
-		SegmentID: db.fwID,
-		Offset:    db.fwOffset - int64(len(rec.Value)),
-		Size:      len(rec.Value),
+	if len(value) == 0 {
+		delete(db.index, key)
+	} else {
+		db.index[key] = recordLoc{
+			SegmentID: db.fwID,
+			Offset:    db.fwOffset,
+			Size:      rec.Size(),
+		}
 	}
 
-	if len(value) == 0 {
-		delete(db.kvIndex, key)
-	} else {
-		db.kvIndex[key] = v
-	}
+	db.fwOffset += n
 
 	return nil
 }
@@ -318,7 +298,7 @@ func (db *DB) Delete(key string) error {
 	if db.closed != nil {
 		return db.closed
 	}
-	if _, ok := db.kvIndex[key]; !ok {
+	if _, ok := db.index[key]; !ok {
 		return nil
 	}
 	return db.put(key, nil)
@@ -332,7 +312,7 @@ func (db *DB) EachKey(f func(key string) bool) error {
 	if db.closed != nil {
 		return db.closed
 	}
-	for k := range db.kvIndex {
+	for k := range db.index {
 		if !f(k) {
 			return nil
 		}
@@ -379,7 +359,7 @@ func (db *DB) Close() error {
 		return fmt.Errorf("syncing and closing active segment file opened for writing: %w", err)
 	}
 
-	for _, fr := range db.frIndex {
+	for _, fr := range db.frs {
 		_ = fr.Close() // ignore error, read-only file
 	}
 

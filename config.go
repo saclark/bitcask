@@ -51,14 +51,12 @@ type Config struct {
 }
 
 func (c Config) validate() error {
-	if maxRecordSize := headerSize + int64(c.MaxKeySize) + int64(c.MaxValueSize); maxRecordSize > c.MaxSegmentSize {
+	maxRecSize := recordSize(c.MaxKeySize, c.MaxValueSize)
+	if maxRecSize > c.MaxSegmentSize {
 		return fmt.Errorf(
-			"config MaxSegmentSize (%dB) insufficient to accomodate max record size (%d bytes = %d byte header + %d byte MaxKeySize + %d byte MaxValueSize)",
+			"config MaxSegmentSize (%dB) insufficient to accomodate computed max record size (%dB)",
 			c.MaxSegmentSize,
-			maxRecordSize,
-			headerSize,
-			c.MaxKeySize,
-			c.MaxValueSize,
+			maxRecSize,
 		)
 	}
 	return nil

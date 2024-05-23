@@ -77,23 +77,20 @@ func (db *DB) compact() error {
 	var sid segmentID
 	var fw *os.File
 	var offset int64
-	for k, v := range db.kvIndex {
+	for k, rec := range db.index {
 		// Skip any values persisted to the active segment or later at the time
 		// this log compaction was kicked off.
-		if v.SegmentID >= activeSegmentID {
+		if rec.SegmentID >= activeSegmentID {
 			continue
 		}
 
-		vfr, ok := db.frIndex[v.SegmentID]
+		vfr, ok := db.frs[rec.SegmentID]
 		if !ok {
 			continue
 		}
 
-		headerAndKeySize := headerSize + int64(len(k))
-		recordSize := headerAndKeySize + int64(v.Size)
-
 		// Create a new segment if necessary.
-		if fw == nil || offset+recordSize > db.cfg.MaxSegmentSize {
+		if fw == nil || offset+rec.Size > db.cfg.MaxSegmentSize {
 			sid = db.nextCompactedSegmentID()
 			fn := sid.Filename()
 
@@ -117,24 +114,24 @@ func (db *DB) compact() error {
 				return fmt.Errorf("opening new compacted segment file for reading: %v", err)
 			}
 
-			db.frIndex[sid] = fr
+			db.frs[sid] = fr
 			offset = 0
 		}
 
 		// Copy the record to the new compacted segment.
-		r := io.NewSectionReader(vfr, v.Offset-headerAndKeySize, recordSize)
-		written, err := io.Copy(fw, r)
+		r := io.NewSectionReader(vfr, rec.Offset, rec.Size)
+		n, err := io.Copy(fw, r)
 		if err != nil {
 			_ = syncAndClose(fw) // TODO: Don't ignore this error if it was a Sync error.
 			return fmt.Errorf("copying record to new compacted segment file: %v", err)
 		}
 
-		offset += written
-
 		// Update the index.
-		v.SegmentID = sid
-		v.Offset = offset - int64(v.Size)
-		db.kvIndex[k] = v
+		rec.SegmentID = sid
+		rec.Offset = offset
+		db.index[k] = rec
+
+		offset += n
 	}
 
 	if fw != nil {
@@ -143,9 +140,9 @@ func (db *DB) compact() error {
 		}
 	}
 
-	for sid, fr := range db.frIndex {
+	for sid, fr := range db.frs {
 		if sid < firstNewCompactedSegmentID || (!sid.Compacted() && sid < activeSegmentID) {
-			delete(db.frIndex, sid)
+			delete(db.frs, sid)
 			_ = fr.Close()           // ignore error, read-only file
 			_ = os.Remove(fr.Name()) // ignore error
 		}

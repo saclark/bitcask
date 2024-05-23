@@ -68,7 +68,7 @@ func (id segmentID) Filename() string {
 
 func (db *DB) nextCompactedSegmentID() segmentID {
 	max := minCompactedSegmentID
-	for sid := range db.frIndex {
+	for sid := range db.frs {
 		if sid.Compacted() && sid > max {
 			max = sid
 		}
@@ -78,7 +78,7 @@ func (db *DB) nextCompactedSegmentID() segmentID {
 
 func (db *DB) nextUncompactedSegmentID() segmentID {
 	max := minUncompactedSegmentID
-	for sid := range db.frIndex {
+	for sid := range db.frs {
 		if !sid.Compacted() && sid > max {
 			max = sid
 		}
