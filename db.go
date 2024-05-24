@@ -261,7 +261,7 @@ func (db *DB) Put(key string, value []byte) error {
 // take care to Lock() before calling this method.
 func (db *DB) put(key string, value []byte) error {
 	rec := newWALRecord([]byte(key), value)
-	if db.fwOffset+rec.Size() > db.cfg.MaxSegmentSize && !db.cfg.CompactManually {
+	if db.fwOffset+rec.Size() > db.cfg.MaxSegmentSize && !db.cfg.DisableAutomaticCompaction {
 		if err := db.rotateSegment(); err != nil {
 			return fmt.Errorf("rotating active segment file: %w", err)
 		}

@@ -11,8 +11,8 @@ import (
 // run, or the [DB] is closing. If run, it returns true and any error
 // encountered. Otherwise, it immediately returns false and the error is nil.
 //
-// Unless [Config.CompactManually] is true, log compaction already runs
-// automatically in the background when the active segment reaches the
+// Unless [Config.DisableAutomaticCompaction] is true, log compaction already
+// runs automatically in the background when the active segment reaches the
 // maximum size given by [Config.MaxSegmentSize]. However, this method allows
 // callers to manually trigger a log compaction at will.
 func (db *DB) Compact() (bool, error) {
