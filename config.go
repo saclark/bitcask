@@ -10,16 +10,19 @@ const (
 
 // Config configures a [DB].
 type Config struct {
-	// MaxKeySize specifies the maximum key byte size. If <= 0, the max key byte
-	// size is 1024 (1 KiB).
+	// MaxKeySize specifies the maximum key size, in bytes, that may be written
+	// to the database. Keys of larger size that exist in the database before
+	// opening may still be read. If <= 0, the max key size is 1024 (1 KiB).
 	MaxKeySize int
 
-	// MaxValueSize specifies the maximum value byte size. If <= 0, the max
-	// value byte size is 536870912 (512 MiB).
+	// MaxValueSize specifies the maximum value size, in bytes, that may be
+	// written to the database. Values of larger size that exist in the database
+	// before opening may still be read. If <= 0, the max value size is
+	// 536870912 (512 MiB).
 	MaxValueSize int
 
-	// MaxSegmentSize specifies the maximum segment byte size. If <= 0, the max
-	// segment byte size is 4294967296 (4 GiB).
+	// MaxSegmentSize specifies the maximum segment size, in bytes. If <= 0, the
+	// max segment size is 4294967296 (4 GiB).
 	//
 	// Writes are routed to a new active segment and a background log compaction
 	// is triggered before the active segment reaches this size. Setting this to
