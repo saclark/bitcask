@@ -574,6 +574,7 @@ func BenchmarkGet(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
+			defer db.Close()
 
 			err = db.Put(key, value)
 			if err != nil {
@@ -590,8 +591,6 @@ func BenchmarkGet(b *testing.B) {
 					b.Errorf("unexpected value")
 				}
 			}
-			b.StopTimer()
-			db.Close()
 		})
 	}
 }
