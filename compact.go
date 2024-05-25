@@ -7,6 +7,21 @@ import (
 	"path/filepath"
 )
 
+// LogCompactionError signifies that log compaction encountered an error. While
+// this means that a full compaction of the segments may not have completed, the
+// DB should still be in a consistent state.
+type LogCompactionError struct {
+	err error
+}
+
+func (e *LogCompactionError) Error() string {
+	return fmt.Sprintf("log compaction: %v", e.err)
+}
+
+func (e *LogCompactionError) Unwrap() error {
+	return e.err
+}
+
 // Compact runs a log compaction job unless one is already running, waiting to
 // run, or the [DB] is closing. If run, it returns true and any error
 // encountered. Otherwise, it immediately returns false and the error is nil.

@@ -17,6 +17,15 @@ import (
 	"sync"
 )
 
+var (
+	ErrKeyTooLarge    = errors.New("key exceeds configured maximum size")
+	ErrValueTooLarge  = errors.New("value exceeds configured maximum size")
+	ErrKeyNotFound    = errors.New("key not found")
+	ErrPartialWrite   = errors.New("wrote partial record")
+	ErrDatabaseLocked = errors.New("database locked")
+	ErrDatabaseClosed = errors.New("database closed")
+)
+
 // rwLocker defines the interface for a reader-writer lock.
 type rwLocker interface {
 	Lock()
@@ -153,10 +162,6 @@ func Open(path string, config Config) (*DB, error) {
 				_ = fw.Close() // ignore error, nothing was written to it
 				for _, fr := range frs {
 					_ = fr.Close() // ignore error, read-only file
-				}
-
-				if errors.Is(err, io.ErrUnexpectedEOF) {
-					return nil, ErrTruncatedRecord
 				}
 
 				return nil, fmt.Errorf("decoding record: %w", err)

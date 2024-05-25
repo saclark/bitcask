@@ -294,8 +294,8 @@ func TestGet_InvalidRecord(t *testing.T) {
 		if err := os.Truncate(fname, fsize-i); err != nil {
 			t.Fatalf("truncating file: %v", err)
 		}
-		if _, err := db.Get(k2); !errors.Is(err, ErrTruncatedRecord) {
-			t.Fatalf("%d byte(s) truncated: want error: '%v', got: '%v'", i, ErrTruncatedRecord, err)
+		if _, err := db.Get(k2); !errors.Is(err, ErrPartialRecord) {
+			t.Fatalf("%d byte(s) truncated: want error: '%v', got: '%v'", i, ErrPartialRecord, err)
 		}
 	}
 }

@@ -22,6 +22,11 @@ const (
 	metaSize       = headerSize + crcSize
 )
 
+var (
+	ErrCorruptRecord = errors.New("corrupt record")
+	ErrPartialRecord = errors.New("partial record")
+)
+
 func recordSize(keySize, valueSize int) int64 {
 	return headerSize + int64(keySize) + int64(valueSize) + crcSize
 }
@@ -134,6 +139,9 @@ func (d *walRecordDecoder) Decode(rec *walRecord) (n int64, err error) {
 		if err != nil {
 			n = n + int64(d.br.Buffered())
 			d.br.Reset(d.r)
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				err = ErrPartialRecord
+			}
 		}
 	}()
 
@@ -173,7 +181,7 @@ func (d *walRecordDecoder) Decode(rec *walRecord) (n int64, err error) {
 	}
 
 	if h.Sum32() != binary.BigEndian.Uint32(crc) {
-		return n, ErrInvalidRecord
+		return n, ErrCorruptRecord
 	}
 
 	rec.Timestamp = binary.BigEndian.Uint64(header[tsOff:tsEnd])
@@ -193,7 +201,7 @@ func readRecordValue(ra io.ReaderAt, recordOff, recordSize int64) ([]byte, error
 // Shouldn't happen, but better than panicing in case it did.
 var errInvalidRecordSize = errors.New("bitcask: invalid record size")
 
-func readRecordValueUnbuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []byte, err error) {
+func readRecordValueUnbuffered(ra io.ReaderAt, recordOff, recordSize int64) ([]byte, error) {
 	if recordSize < metaSize {
 		return nil, errInvalidRecordSize
 	}
@@ -201,7 +209,7 @@ func readRecordValueUnbuffered(ra io.ReaderAt, recordOff, recordSize int64) (v [
 	b := make([]byte, recordSize)
 	if _, err := ra.ReadAt(b, recordOff); err != nil {
 		if errors.Is(err, io.EOF) {
-			return nil, ErrTruncatedRecord
+			return nil, ErrPartialRecord
 		}
 		return nil, err
 	}
@@ -211,11 +219,11 @@ func readRecordValueUnbuffered(ra io.ReaderAt, recordOff, recordSize int64) (v [
 		return nil, err
 	}
 	if h.Sum32() != binary.BigEndian.Uint32(b[len(b)-crcSize:]) {
-		return nil, ErrInvalidRecord
+		return nil, ErrCorruptRecord
 	}
 
 	ksz := binary.BigEndian.Uint32(b[kszOff:kszEnd])
-	v = b[headerSize+ksz : len(b)-crcSize]
+	v := b[headerSize+ksz : len(b)-crcSize]
 
 	return v, nil
 }
@@ -228,7 +236,7 @@ func readRecordValueBuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []b
 	defer func() {
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				err = ErrTruncatedRecord
+				err = ErrPartialRecord
 			}
 		}
 	}()
@@ -269,7 +277,7 @@ func readRecordValueBuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []b
 		return nil, err
 	}
 	if h.Sum32() != binary.BigEndian.Uint32(crc) {
-		return nil, ErrInvalidRecord
+		return nil, ErrCorruptRecord
 	}
 
 	return v, nil
