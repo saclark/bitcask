@@ -67,15 +67,12 @@ func newWALRecordEncoder(w io.Writer) *walRecordEncoder {
 
 // Encode writes the binary encoding of rec to the stream.
 func (e *walRecordEncoder) Encode(rec walRecord) (n int64, err error) {
-	// If there is an error, reset the buffered writer and adjust n to reflect
-	// the number of bytes actually flushed to the underlying writer.
 	defer func() {
 		if err != nil {
-			n = n - int64(e.bw.Buffered())
-			if n < 0 {
-				n = 0
+			if unflushed := e.bw.Buffered(); unflushed > 0 {
+				n -= int64(unflushed)
+				e.bw.Reset(e.w)
 			}
-			e.bw.Reset(e.w)
 		}
 	}()
 
