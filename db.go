@@ -18,12 +18,13 @@ import (
 )
 
 var (
-	ErrKeyTooLarge    = errors.New("key exceeds configured maximum size")
-	ErrValueTooLarge  = errors.New("value exceeds configured maximum size")
-	ErrKeyNotFound    = errors.New("key not found")
-	ErrPartialWrite   = errors.New("wrote partial record")
-	ErrDatabaseLocked = errors.New("database locked")
-	ErrDatabaseClosed = errors.New("database closed")
+	ErrKeyTooLarge      = errors.New("key exceeds configured maximum size")
+	ErrValueTooLarge    = errors.New("value exceeds configured maximum size")
+	ErrKeyNotFound      = errors.New("key not found")
+	ErrPartialWrite     = errors.New("partial write")
+	ErrDatabaseReadOnly = errors.New("database read-only")
+	ErrDatabaseLocked   = errors.New("database locked")
+	ErrDatabaseClosed   = errors.New("database closed")
 )
 
 // rwLocker defines the interface for a reader-writer lock.
@@ -64,6 +65,7 @@ type DB struct {
 	compactChan chan chan error
 	closeChan   chan struct{}
 	closed      error
+	writeClosed error
 }
 
 // Open returns a [DB] using the directory at path to load and store data. If no
@@ -164,7 +166,14 @@ func Open(path string, config Config) (*DB, error) {
 					_ = fr.Close() // ignore error, read-only file
 				}
 
-				return nil, fmt.Errorf("decoding record: %w", err)
+				// Either there was a partial write or the segment file was
+				// corrupted.
+				return nil, fmt.Errorf(
+					"decoding record starting at byte %d in segment file %s: %w",
+					offset,
+					fr.Name(),
+					err,
+				)
 			}
 
 			k := string(rec.Key)
@@ -255,8 +264,8 @@ func (db *DB) Put(key string, value []byte) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	if db.closed != nil {
-		return db.closed
+	if db.writeClosed != nil {
+		return db.writeClosed
 	}
 
 	return db.put(key, value)
@@ -277,10 +286,29 @@ func (db *DB) put(key string, value []byte) error {
 
 	n, err := db.fwEncoder.Encode(rec)
 	if err != nil {
-		if n > 0 && n < rec.Size() {
-			return ErrPartialWrite
+		if n <= 0 || n >= rec.Size() {
+			return err
 		}
-		return err
+
+		// Partial write, so something is borked. Not ideal, but we'll prevent
+		// further writes since the segment file is now in an invalid state that
+		// requires manual intervention to repair. Not doing so risks further
+		// corruption or data loss.
+		db.writeClosed = fmt.Errorf(
+			"%w: preventing further writes due to invalid record: record starting at byte %d in segment file %s: %w",
+			ErrDatabaseReadOnly,
+			db.fwOffset,
+			db.fwID.Filename(),
+			ErrPartialWrite,
+		)
+
+		return fmt.Errorf(
+			"writing record starting at byte %d in segment file %s: %w: %w",
+			db.fwOffset,
+			db.fwID.Filename(),
+			ErrPartialWrite,
+			err,
+		)
 	}
 
 	if len(value) == 0 {
@@ -302,8 +330,8 @@ func (db *DB) put(key string, value []byte) error {
 func (db *DB) Delete(key string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	if db.closed != nil {
-		return db.closed
+	if db.writeClosed != nil {
+		return db.writeClosed
 	}
 	if _, ok := db.index[key]; !ok {
 		return nil
@@ -361,6 +389,7 @@ func (db *DB) Close() error {
 	defer db.mu.Unlock()
 
 	db.closed = ErrDatabaseClosed
+	db.writeClosed = ErrDatabaseClosed
 
 	if err := syncAndClose(db.fw); err != nil {
 		return fmt.Errorf("syncing and closing active segment file opened for writing: %w", err)
