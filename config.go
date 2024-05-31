@@ -24,11 +24,12 @@ type Config struct {
 	// MaxSegmentSize specifies the maximum segment size, in bytes. If <= 0, the
 	// max segment size is 4294967296 (4 GiB).
 	//
-	// Writes are routed to a new active segment and a background log compaction
-	// is triggered before the active segment reaches this size. Setting this to
-	// a value larger than available disk space effectively turns off automatic
-	// active segment rotation and log compaction, in which case both can be
-	// performed manually via [DB.RotateSegment] and [DB.Compact].
+	// Writes are routed to a new active segment and log compaction is triggered
+	// (unless [Config.DisableAutomaticCompaction] is true) before the active
+	// segment exceeds this size. Setting this to a value larger than available
+	// disk space effectively turns off automatic active segment rotation and
+	// log compaction, in which case both can be performed manually via
+	// [DB.RotateSegment] and [DB.Compact].
 	//
 	// It must be at least 20 bytes larger than the sum of [Config.MaxKeySize]
 	// and [Config.MaxValueSize] in order to accomodate the maximum size WAL
