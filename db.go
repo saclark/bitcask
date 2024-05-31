@@ -21,10 +21,33 @@ var (
 	ErrKeyTooLarge    = errors.New("key exceeds configured maximum size")
 	ErrValueTooLarge  = errors.New("value exceeds configured maximum size")
 	ErrKeyNotFound    = errors.New("key not found")
-	ErrPartialWrite   = errors.New("wrote partial record")
 	ErrDatabaseLocked = errors.New("database locked")
 	ErrDatabaseClosed = errors.New("database closed")
 )
+
+type PartialWriteError struct {
+	err error
+}
+
+func (e *PartialWriteError) Error() string {
+	return fmt.Sprintf("partial write: %v", e.err)
+}
+
+func (e *PartialWriteError) Unwrap() error {
+	return e.err
+}
+
+type DatabaseWritesClosedError struct {
+	err error
+}
+
+func (e *DatabaseWritesClosedError) Error() string {
+	return fmt.Sprintf("database closed for writes: %v", e.err)
+}
+
+func (e *DatabaseWritesClosedError) Unwrap() error {
+	return e.err
+}
 
 // rwLocker defines the interface for a reader-writer lock.
 type rwLocker interface {
@@ -64,6 +87,7 @@ type DB struct {
 	compactChan chan chan error
 	closeChan   chan struct{}
 	closed      error
+	writeClosed error
 }
 
 // Open returns a [DB] using the directory at path to load and store data. If no
@@ -255,8 +279,8 @@ func (db *DB) Put(key string, value []byte) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	if db.closed != nil {
-		return db.closed
+	if db.writeClosed != nil {
+		return db.writeClosed
 	}
 
 	return db.put(key, value)
@@ -277,9 +301,21 @@ func (db *DB) put(key string, value []byte) error {
 
 	n, err := db.fwEncoder.Encode(rec)
 	if err != nil {
+		// If a partial record was written, ensure it remains the last record in
+		// the segment by rotating the active segment. Otherwise, subsequent
+		// writes may be lost or corrupted as opening of the database and log
+		// compaction would be unable to determine where the next record begins.
+		// Prevent further writes if rotation fails.
 		if n > 0 && n < rec.Size() {
-			return ErrPartialWrite
+			if rotErr := db.rotateSegment(); rotErr != nil {
+				rotErr = &DatabaseWritesClosedError{err: &PartialWriteError{err: rotErr}}
+				db.writeClosed = rotErr
+				db.emit(rotErr)
+				return rotErr
+			}
+			return &PartialWriteError{err: err}
 		}
+
 		return err
 	}
 
@@ -302,8 +338,8 @@ func (db *DB) put(key string, value []byte) error {
 func (db *DB) Delete(key string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	if db.closed != nil {
-		return db.closed
+	if db.writeClosed != nil {
+		return db.writeClosed
 	}
 	if _, ok := db.index[key]; !ok {
 		return nil
@@ -361,6 +397,7 @@ func (db *DB) Close() error {
 	defer db.mu.Unlock()
 
 	db.closed = ErrDatabaseClosed
+	db.writeClosed = ErrDatabaseClosed
 
 	if err := syncAndClose(db.fw); err != nil {
 		return fmt.Errorf("syncing and closing active segment file opened for writing: %w", err)
