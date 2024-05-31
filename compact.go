@@ -8,8 +8,8 @@ import (
 )
 
 // LogCompactionError signifies that log compaction encountered an error. While
-// this means that a full compaction of the segments may not have completed, the
-// DB should still be in a consistent state.
+// this means that a full compaction of the log may not have completed, the DB
+// should still be in a consistent state.
 type LogCompactionError struct {
 	err error
 }
@@ -22,15 +22,15 @@ func (e *LogCompactionError) Unwrap() error {
 	return e.err
 }
 
-// Compact runs a log compaction job unless one is already running, waiting to
-// run, or the [DB] is closing. If run, it returns true and any error
+// CompactLog runs a log compaction job unless one is already running, waiting
+// to run, or the [DB] is closing. If run, it returns true and any error
 // encountered. Otherwise, it immediately returns false and the error is nil.
 //
-// Unless [Config.DisableAutomaticCompaction] is true, log compaction already
+// Unless [Config.DisableAutomaticLogCompaction] is true, log compaction already
 // runs automatically in the background when the active segment reaches the
 // maximum size given by [Config.MaxSegmentSize]. However, this method allows
 // callers to manually trigger a log compaction at will.
-func (db *DB) Compact() (bool, error) {
+func (db *DB) CompactLog() (bool, error) {
 	db.mu.RLock()
 	if db.closed != nil {
 		defer db.mu.RUnlock()
@@ -62,7 +62,7 @@ func (db *DB) serveLogCompaction() {
 	for {
 		select {
 		case c := <-db.compactChan:
-			err := db.compact()
+			err := db.compactLog()
 			if err != nil {
 				db.emit(&LogCompactionError{err: fmt.Errorf("log compaction: failed: %w", err)})
 			}
@@ -76,7 +76,7 @@ func (db *DB) serveLogCompaction() {
 	}
 }
 
-func (db *DB) compact() error {
+func (db *DB) compactLog() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 

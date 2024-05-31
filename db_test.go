@@ -179,7 +179,7 @@ func TestDB_SingleThreaded(t *testing.T) {
 	}
 }
 
-func TestGet_WhileCompacting(t *testing.T) {
+func TestGet_WhileCompactingLog(t *testing.T) {
 	const vsize = 4096
 	config := DefaultConfig()
 	config.MaxKeySize = 1
@@ -196,7 +196,7 @@ func TestGet_WhileCompacting(t *testing.T) {
 		}
 	}
 
-	path, db, err := openTmpDB(t, "TestGet_WhileCompacting", config)
+	path, db, err := openTmpDB(t, "TestGet_WhileCompactingLog", config)
 	if err != nil {
 		t.Fatalf("opening tmp DB directory: %v", err)
 	}
@@ -522,8 +522,8 @@ func TestClose_DBMethodsReturnErrDatabaseClosed(t *testing.T) {
 	if err := db.RotateSegment(); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("RotateSegment: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
-	if _, err := db.Compact(); !errors.Is(err, ErrDatabaseClosed) {
-		t.Errorf("Compact: want '%v', got '%v'", ErrDatabaseClosed, err)
+	if _, err := db.CompactLog(); !errors.Is(err, ErrDatabaseClosed) {
+		t.Errorf("CompactLog: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
 	if err := db.Sync(); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("Sync: want '%v', got '%v'", ErrDatabaseClosed, err)

@@ -270,7 +270,7 @@ func (db *DB) put(key string, value []byte) error {
 		if err := db.rotateSegment(); err != nil {
 			return fmt.Errorf("rotating active segment: %w", err)
 		}
-		if !db.cfg.DisableAutomaticCompaction {
+		if !db.cfg.DisableAutomaticLogCompaction {
 			db.triggerLogCompaction(nil)
 		}
 	}
