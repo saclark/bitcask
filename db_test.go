@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -241,8 +242,8 @@ func TestGet_WhileCompactingLog(t *testing.T) {
 	}
 }
 
-func TestGet_InvalidRecord(t *testing.T) {
-	path, db, err := openTmpDB(t, "TestGet_InvalidRecord", DefaultConfig())
+func TestGet_TruncatedRecord(t *testing.T) {
+	path, db, err := openTmpDB(t, "TestGet_TruncatedRecord", DefaultConfig())
 	if err != nil {
 		t.Fatalf("opening tmp DB directory: %v", err)
 	}
@@ -294,8 +295,8 @@ func TestGet_InvalidRecord(t *testing.T) {
 		if err := os.Truncate(fname, fsize-i); err != nil {
 			t.Fatalf("truncating file: %v", err)
 		}
-		if _, err := db.Get(k2); !errors.Is(err, ErrPartialRecord) {
-			t.Fatalf("%d byte(s) truncated: want error: '%v', got: '%v'", i, ErrPartialRecord, err)
+		if _, err := db.Get(k2); !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("%d byte(s) truncated: want error: '%v', got: '%v'", i, io.ErrUnexpectedEOF, err)
 		}
 	}
 }

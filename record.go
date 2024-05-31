@@ -22,10 +22,7 @@ const (
 	metaSize       = headerSize + crcSize
 )
 
-var (
-	ErrCorruptRecord = errors.New("corrupt record")
-	ErrPartialRecord = errors.New("partial record")
-)
+var ErrCorruptRecord = errors.New("corrupt record")
 
 func recordSize(keySize, valueSize int) int64 {
 	return headerSize + int64(keySize) + int64(valueSize) + crcSize
@@ -130,18 +127,6 @@ func newWALRecordDecoder(r io.Reader) *walRecordDecoder {
 // Decode reads the next encoded [walRecord] value from its input and stores it
 // in the value pointed to by rec.
 func (d *walRecordDecoder) Decode(rec *walRecord) (n int64, err error) {
-	// If there is an error, reset the buffered reader and adjust n to reflect
-	// the number of bytes actually read from the underlying reader.
-	defer func() {
-		if err != nil {
-			n = n + int64(d.br.Buffered())
-			d.br.Reset(d.r)
-			if errors.Is(err, io.ErrUnexpectedEOF) {
-				err = ErrPartialRecord
-			}
-		}
-	}()
-
 	h := crc32.NewIEEE()
 	tr := io.TeeReader(d.br, h)
 
@@ -206,7 +191,7 @@ func readRecordValueUnbuffered(ra io.ReaderAt, recordOff, recordSize int64) ([]b
 	b := make([]byte, recordSize)
 	if _, err := ra.ReadAt(b, recordOff); err != nil {
 		if errors.Is(err, io.EOF) {
-			return nil, ErrPartialRecord
+			return nil, io.ErrUnexpectedEOF
 		}
 		return nil, err
 	}
@@ -230,14 +215,6 @@ func readRecordValueBuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []b
 		return nil, errInvalidRecordSize
 	}
 
-	defer func() {
-		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				err = ErrPartialRecord
-			}
-		}
-	}()
-
 	sr := io.NewSectionReader(ra, recordOff, recordSize)
 	br := bufio.NewReaderSize(sr, bufSize)
 
@@ -255,6 +232,9 @@ func readRecordValueBuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []b
 	// Copy the key directly to the CRC hash.
 	ksz := binary.BigEndian.Uint32(header[kszOff:kszEnd])
 	if _, err = io.CopyN(h, br, int64(ksz)); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, io.ErrUnexpectedEOF
+		}
 		return nil, err
 	}
 
