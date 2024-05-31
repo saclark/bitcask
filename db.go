@@ -277,10 +277,10 @@ func (db *DB) put(key string, value []byte) error {
 
 	n, err := db.fwEncoder.Encode(rec)
 	if err != nil {
-		if n == 0 {
-			return err
+		if n > 0 && n < rec.Size() {
+			return ErrPartialWrite
 		}
-		return ErrPartialWrite
+		return err
 	}
 
 	if len(value) == 0 {
