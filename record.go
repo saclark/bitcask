@@ -31,8 +31,8 @@ func recordSize(keySize, valueSize int) int64 {
 	return headerSize + int64(keySize) + int64(valueSize) + crcSize
 }
 
-// walRecord represents the data written to a segment file for a single
-// key-value pair.
+// walRecord represents the data written to a segment for a single key-value
+// pair.
 type walRecord struct {
 	Timestamp uint64
 	Key       []byte
@@ -49,7 +49,7 @@ func newWALRecord(key []byte, value []byte) walRecord {
 }
 
 // Size returns the byte size of the full [walRecord] when written to the
-// segment file.
+// segment.
 func (r *walRecord) Size() int64 {
 	return headerSize + int64(len(r.Key)) + int64(len(r.Value)) + crcSize
 }

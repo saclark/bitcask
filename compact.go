@@ -138,7 +138,7 @@ func (db *DB) compact() error {
 		n, err := io.Copy(fw, r)
 		if err != nil {
 			_ = syncAndClose(fw) // TODO: Don't ignore this error if it was a Sync error.
-			return fmt.Errorf("copying record to new compacted segment file: %v", err)
+			return fmt.Errorf("copying record to new compacted segment: %v", err)
 		}
 
 		// Update the index.

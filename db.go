@@ -325,9 +325,9 @@ func (db *DB) EachKey(f func(key string) bool) error {
 	return nil
 }
 
-// Sync commits the current contents of the active segment file to stable
-// storage. Typically, this means flushing the file system's in-memory copy of
-// recently written data to disk.
+// Sync commits the current contents of the active segment to stable storage.
+// Typically, this means flushing the file system's in-memory copy of recently
+// written data to disk.
 func (db *DB) Sync() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -337,9 +337,9 @@ func (db *DB) Sync() error {
 	return db.fw.Sync()
 }
 
-// Close closes the database. It syncs the active segment file, closes all open
-// file handles, and releases it's lock on the database directory. It blocks
-// until log compaction has completed if one is running at the time.
+// Close closes the database. It syncs the active segment, closes all open file
+// handles, and releases it's lock on the database directory. It blocks until
+// log compaction has completed if one is running at the time.
 //
 // Once Close has been called on a [DB], it may not be reused; future calls
 // to Close or other methods such as [DB.Get] or [DB.Put] will return
