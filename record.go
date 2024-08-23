@@ -12,7 +12,11 @@ import (
 
 const bufSize = 4096
 
-// [walRecord] header offsets
+// Offsets to fields in a binary encoded [walRecord], for which the format is:
+//
+//	+----------------+---------------+-----------------+- ... -+- ... -+----------+
+//	| Timestamp (8B) | Key Size (4B) | Value Size (4B) |  Key  | Value | CRC (4B) |
+//	+----------------+---------------+-----------------+- ... -+- ... -+----------+
 const (
 	tsOff, tsEnd   = 0, kszOff
 	kszOff, kszEnd = tsOff + 8, vszOff
