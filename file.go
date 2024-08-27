@@ -66,6 +66,9 @@ func (id segmentID) Filename() string {
 	return fmt.Sprintf("%020d", id) + segFileExt
 }
 
+// nextCompactedSegmentID returns the next ID to use in the series of
+// monotonically increasing segment IDs representing compacted segments.
+// Callers must take care to Lock() before calling this method.
 func (db *DB) nextCompactedSegmentID() segmentID {
 	max := minCompactedSegmentID
 	for sid := range db.frs {
@@ -76,6 +79,9 @@ func (db *DB) nextCompactedSegmentID() segmentID {
 	return max.Inc()
 }
 
+// nextUncompactedSegmentID returns the next ID to use in the series of
+// monotonically increasing segment IDs representing uncompacted segments.
+// Callers must take care to Lock() before calling this method.
 func (db *DB) nextUncompactedSegmentID() segmentID {
 	max := minUncompactedSegmentID
 	for sid := range db.frs {
