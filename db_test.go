@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func openTmpDB(t *testing.T, pattern string, config Config) (string, *DB, error) {
@@ -31,24 +32,28 @@ func openTmpDB(t *testing.T, pattern string, config Config) (string, *DB, error)
 	return path, db, nil
 }
 
-func assertOp(t *testing.T, db *DB, op string, key string, value []byte, opErr error) {
+func assertOp(t *testing.T, db *DB, op string, key string, value []byte, ttl time.Duration, opErr error) {
 	t.Helper()
 	switch op {
 	case "Get":
 		v, err := db.Get(key)
 		if !errors.Is(err, opErr) {
-			t.Fatalf("Get('%s'): %s", key, err)
+			t.Fatalf("Get('%s'): got err '%v', want err '%v'", key, err, opErr)
 		}
 		if !bytes.Equal(v, value) {
 			t.Fatalf("Get('%s'): got '%s', want '%s'", key, v, value)
 		}
 	case "Put":
 		if err := db.Put(key, value); !errors.Is(err, opErr) {
-			t.Fatalf("Put('%s', '%s'): %v", key, value, err)
+			t.Fatalf("Put('%s', '%s'): got err '%v', want err '%v'", key, value, err, opErr)
+		}
+	case "PutWithTTL":
+		if err := db.PutWithTTL(key, value, ttl); !errors.Is(err, opErr) {
+			t.Fatalf("PutWithTTL('%s', '%s', '%v'): got err '%v', want err '%v'", key, value, ttl, err, opErr)
 		}
 	case "Del":
 		if err := db.Delete(key); !errors.Is(err, opErr) {
-			t.Fatalf("Delete('%s'): %v", key, err)
+			t.Fatalf("Delete('%s'): got err '%v', want err '%v'", key, err, opErr)
 		}
 	default:
 		panic("invalid operation")
@@ -71,6 +76,7 @@ func TestOpen_LocksDB(t *testing.T) {
 	}
 }
 
+// TODO: Log compaction no longer stops the world so this is now flaky.
 func TestDB_SingleThreaded(t *testing.T) {
 	config := DefaultConfig()
 	config.MaxKeySize = 4
@@ -127,7 +133,7 @@ func TestDB_SingleThreaded(t *testing.T) {
 
 	for i, op := range ops {
 		t.Logf("i=%d", i)
-		assertOp(t, db, op.Op, op.Key, op.Value, op.Err)
+		assertOp(t, db, op.Op, op.Key, op.Value, 0, op.Err)
 	}
 
 	if err := db.Close(); err != nil {
@@ -139,7 +145,7 @@ func TestDB_SingleThreaded(t *testing.T) {
 		t.Fatalf("reading directory: %v", err)
 	}
 
-	// TODO: This may be flaky. Depends on the timing of when the log compaction goroutine gets scheduled.
+	// TODO: Depends on when the log compaction goroutine runs so this is flaky.
 	if want := 3; len(segs) != want {
 		t.Fatalf("want %d files, got %d", want, len(segs))
 	}
@@ -176,7 +182,7 @@ func TestDB_SingleThreaded(t *testing.T) {
 
 	for i, op := range ops {
 		t.Logf("i=%d", i)
-		assertOp(t, db, op.Op, op.Key, op.Value, op.Err)
+		assertOp(t, db, op.Op, op.Key, op.Value, 0, op.Err)
 	}
 }
 
@@ -474,6 +480,11 @@ func TestClose_WhileDeleting(t *testing.T) {
 	if _, err := Open(path, DefaultConfig()); err != nil {
 		t.Fatalf("failed to Open() after Close(): %v", err)
 	}
+}
+
+// TODO: Test Close() while compacting.
+func TestClose_WhileCompacting(t *testing.T) {
+	t.Skip("TODO")
 }
 
 func TestClose_UnlocksDB(t *testing.T) {

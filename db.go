@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -94,6 +95,8 @@ func Open(path string, config Config) (*DB, error) {
 		}
 		return nil, err
 	}
+
+	// FIXME: Be sure to remove the DB lock if any errors occur below.
 
 	// List all segment filenames.
 	fns, err := filepath.Glob(filepath.Join(path, "*"+segFileExt))
@@ -178,7 +181,8 @@ func Open(path string, config Config) (*DB, error) {
 
 			k := string(rec.Key)
 
-			if len(rec.Value) == 0 {
+			ttl, _ := rec.TTL()
+			if len(rec.Value) == 0 || ttl <= 0 {
 				delete(index, k)
 			} else {
 				index[k] = recordLoc{
@@ -236,7 +240,17 @@ func (db *DB) Get(key string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return readRecordValue(fr, rec.Offset, rec.Size)
+	v, err := readRecordValue(fr, rec.Offset, rec.Size)
+	if err != nil {
+		if errors.Is(err, ErrRecordExpired) {
+			db.mu.Lock()
+			defer db.mu.Unlock()
+			delete(db.index, key)
+			return nil, ErrKeyNotFound
+		}
+		return nil, err
+	}
+	return v, nil
 }
 
 func (db *DB) indexGet(key string) (recordLoc, io.ReaderAt, error) {
@@ -260,7 +274,33 @@ func (db *DB) Put(key string, value []byte) error {
 	if len(value) > db.cfg.MaxValueSize {
 		return ErrValueTooLarge
 	}
+	return db.put(key, value, 0)
+}
 
+// PutWithTTL inserts or overwrites the value associated with key along with a
+// time to live (TTL) duration, after which the value is considered expired.
+// Values with a TTL <= 0 are deleted.
+func (db *DB) PutWithTTL(key string, value []byte, ttl time.Duration) error {
+	if len(key) > db.cfg.MaxKeySize {
+		return ErrKeyTooLarge
+	}
+	if len(value) > db.cfg.MaxValueSize {
+		return ErrValueTooLarge
+	}
+	if ttl <= 0 {
+		value = nil
+	}
+	return db.put(key, value, ttl)
+}
+
+// Delete deletes the key-value pair associated with key.
+func (db *DB) Delete(key string) error {
+	return db.put(key, nil, 0)
+}
+
+// put persists the key-value pair and updates the in-memory index. A nil value
+// or negative TTL deletes the key-value pair.
+func (db *DB) put(key string, value []byte, ttl time.Duration) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -268,13 +308,15 @@ func (db *DB) Put(key string, value []byte) error {
 		return db.writeClosed
 	}
 
-	return db.put(key, value)
-}
+	// Delete the record if value is nil or TTL < 0.
+	if value == nil || ttl < 0 {
+		if _, ok := db.index[key]; !ok {
+			return nil
+		}
+		value, ttl = nil, 0
+	}
 
-// put persists the key-value pair and updates the in-memory index. Callers must
-// take care to Lock() before calling this method.
-func (db *DB) put(key string, value []byte) error {
-	rec := newWALRecord([]byte(key), value)
+	rec := newWALRecord([]byte(key), value, ttl)
 	if db.fwOffset+rec.Size() > db.cfg.MaxSegmentSize {
 		if err := db.rotateSegment(); err != nil {
 			return fmt.Errorf("rotating active segment: %w", err)
@@ -324,19 +366,6 @@ func (db *DB) put(key string, value []byte) error {
 	db.fwOffset += n
 
 	return nil
-}
-
-// Delete deletes the key-value pair associated with key.
-func (db *DB) Delete(key string) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-	if db.writeClosed != nil {
-		return db.writeClosed
-	}
-	if _, ok := db.index[key]; !ok {
-		return nil
-	}
-	return db.put(key, nil)
 }
 
 // Keys iterates over all keys, passing each key to f and terminating when f

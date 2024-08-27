@@ -8,7 +8,7 @@ import (
 func BenchmarkEncode(b *testing.B) {
 	var buf bytes.Buffer
 	enc := newWALRecordEncoder(&buf)
-	rec := newWALRecord([]byte("mykey"), []byte("myvalue"))
+	rec := newWALRecord([]byte("mykey"), []byte("myvalue"), 0)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := enc.Encode(rec); err != nil {

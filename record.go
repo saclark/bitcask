@@ -14,19 +14,22 @@ const bufSize = 4096
 
 // Offsets to fields in a binary encoded [walRecord], for which the format is:
 //
-//	+----------------+---------------+-----------------+- ... -+- ... -+----------+
-//	| Timestamp (8B) | Key Size (4B) | Value Size (4B) |  Key  | Value | CRC (4B) |
-//	+----------------+---------------+-----------------+- ... -+- ... -+----------+
+//	+-------------+---------------+-----------------+- ... -+- ... -+----------+
+//	| Expiry (8B) | Key Size (4B) | Value Size (4B) |  Key  | Value | CRC (4B) |
+//	+-------------+---------------+-----------------+- ... -+- ... -+----------+
 const (
-	tsOff, tsEnd   = 0, kszOff
-	kszOff, kszEnd = tsOff + 8, vszOff
+	expOff, expEnd = 0, kszOff
+	kszOff, kszEnd = expOff + 8, vszOff
 	vszOff, vszEnd = kszOff + 4, headerSize
 	headerSize     = vszOff + 4
 	crcSize        = 4
 	metaSize       = headerSize + crcSize
 )
 
-var ErrCorruptRecord = errors.New("corrupt record")
+var (
+	ErrRecordExpired = errors.New("record expired")
+	ErrCorruptRecord = errors.New("corrupt record")
+)
 
 func recordSize(keySize, valueSize int) int64 {
 	return headerSize + int64(keySize) + int64(valueSize) + crcSize
@@ -35,24 +38,51 @@ func recordSize(keySize, valueSize int) int64 {
 // walRecord represents the data written to a segment for a single key-value
 // pair.
 type walRecord struct {
-	Timestamp uint64
-	Key       []byte
-	Value     []byte
+	Expiry uint64
+	Key    []byte
+	Value  []byte
 }
 
 // newWALRecord constructs a new [walRecord] value.
-func newWALRecord(key []byte, value []byte) walRecord {
-	return walRecord{
-		Timestamp: uint64(time.Now().UTC().UnixNano()),
-		Key:       key,
-		Value:     value,
+func newWALRecord(key []byte, value []byte, ttl time.Duration) walRecord {
+	rec := walRecord{Key: key, Value: value}
+	if ttl != 0 {
+		rec.Expiry = uint64(time.Now().UTC().Add(ttl).Unix())
 	}
+	return rec
 }
 
 // Size returns the byte size of the full [walRecord] when written to the
 // segment.
 func (r *walRecord) Size() int64 {
 	return headerSize + int64(len(r.Key)) + int64(len(r.Value)) + crcSize
+}
+
+var maxExpiry = uint64(1<<63 - 1) // max int64 == max time.Duration
+
+// TTL returns the remaining time to live for the record and a boolean
+// indicating whether the record actually has an associated expiry. Records
+// without an associated expiry return the maximum time.Duration. Records that
+// have expired return 0.
+func (r *walRecord) TTL() (time.Duration, bool) {
+	return expiryTTL(r.Expiry)
+}
+
+// expiryTTL returns the remaining time to live until expiry and a boolean
+// indicating whether the expiry is valid. An expiry in the past returns 0.
+// An invalid expiry return the maximum time.Duration.
+func expiryTTL(expiry uint64) (time.Duration, bool) {
+	if expiry == 0 {
+		return time.Duration(maxExpiry), false
+	}
+	if expiry > maxExpiry {
+		expiry = maxExpiry
+	}
+	ttl := time.Unix(int64(expiry), 0).Sub(time.Now().UTC())
+	if ttl < 0 {
+		ttl = 0
+	}
+	return ttl, true
 }
 
 // walRecordEncoder writes [walRecord] values to an output stream.
@@ -78,7 +108,7 @@ func (e *walRecordEncoder) Encode(rec walRecord) (n int64, err error) {
 	}()
 
 	header := make([]byte, headerSize)
-	binary.BigEndian.PutUint64(header[tsOff:tsEnd], rec.Timestamp)
+	binary.BigEndian.PutUint64(header[expOff:expEnd], rec.Expiry)
 	binary.BigEndian.PutUint32(header[kszOff:kszEnd], uint32(len(rec.Key)))
 	binary.BigEndian.PutUint32(header[vszOff:vszEnd], uint32(len(rec.Value)))
 
@@ -170,7 +200,7 @@ func (d *walRecordDecoder) Decode(rec *walRecord) (n int64, err error) {
 		return n, ErrCorruptRecord
 	}
 
-	rec.Timestamp = binary.BigEndian.Uint64(header[tsOff:tsEnd])
+	rec.Expiry = binary.BigEndian.Uint64(header[expOff:expEnd])
 	rec.Key = k
 	rec.Value = v
 
@@ -206,6 +236,11 @@ func readRecordValueUnbuffered(ra io.ReaderAt, recordOff, recordSize int64) ([]b
 	}
 	if h.Sum32() != binary.BigEndian.Uint32(b[len(b)-crcSize:]) {
 		return nil, ErrCorruptRecord
+	}
+
+	expiry := binary.BigEndian.Uint64(b[expOff:expEnd])
+	if ttl, _ := expiryTTL(expiry); ttl <= 0 {
+		return nil, ErrRecordExpired
 	}
 
 	ksz := binary.BigEndian.Uint32(b[kszOff:kszEnd])
@@ -259,6 +294,11 @@ func readRecordValueBuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []b
 	}
 	if h.Sum32() != binary.BigEndian.Uint32(crc) {
 		return nil, ErrCorruptRecord
+	}
+
+	expiry := binary.BigEndian.Uint64(header[expOff:expEnd])
+	if ttl, _ := expiryTTL(expiry); ttl <= 0 {
+		return nil, ErrRecordExpired
 	}
 
 	return v, nil
