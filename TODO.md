@@ -1,11 +1,10 @@
 # TODO
 
-* [ ] What to do if a file Sync() errs?
-* [ ] Add expiry feature. Replace Timestamp with Expiry.
-* [ ] Consider performing merge in a way that blocks less (e.g. don't iterate kvIndex, parse keys from segment files).
-* [ ] Produce .index files during merge use them to Open DB.
-* [ ] Cleanup/improve errors (messages, data, which to export, etc.). Create an InvalidConfigError type?
+* [ ] Prevent or add coordinatation/cancelation when attempting to close the DB during a log compaction.
+* [ ] Produce .index files during merge and use them to Open DB.
 * [ ] Allow DB to be opened in read-only mode.
+* [ ] What to do if a file Sync() errs?
+* [ ] Cleanup/improve errors (messages, data, which to export, etc.). Create an InvalidConfigError type?
 * [ ] Fill out the README and documentation.
 * [ ] Much more extensive testing.
 * [ ] Much more extensive benchmarking and profiling.
