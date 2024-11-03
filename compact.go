@@ -165,8 +165,8 @@ func (db *DB) compactLog() error {
 			// Skip if not latest version.
 			key := string(rec.Key)
 			db.mu.RLock()
-			loc, ok := db.index[key]
-			if !ok || loc.SegmentID != srcSID || loc.Offset != srcOffset {
+			origLoc, ok := db.index[key]
+			if !ok || origLoc.SegmentID != srcSID || origLoc.Offset != srcOffset {
 				db.mu.RUnlock()
 				srcOffset += nRead
 				continue
@@ -242,12 +242,16 @@ func (db *DB) compactLog() error {
 				)
 			}
 
-			// Update the index.
-			loc.SegmentID = dstSID
-			loc.Offset = dstOffset
-
+			// Update the index so long as it hasn't changed since we last looked it up.
 			db.mu.Lock()
-			db.index[key] = loc
+			v, ok := db.index[key]
+			if ok && v.SegmentID == origLoc.SegmentID && v.Offset == origLoc.Offset {
+				db.index[key] = recordLoc{
+					SegmentID: dstSID,
+					Offset:    dstOffset,
+					Size:      origLoc.Size,
+				}
+			}
 			db.mu.Unlock()
 
 			srcOffset += nRead
