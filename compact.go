@@ -98,10 +98,10 @@ func (db *DB) compactLog() error {
 		return db.closed
 	}
 
-	activeSID := db.fwID
+	activeSIDAsOfStart := db.fwID
 	var sids []segmentID
 	for sid := range db.frs {
-		if sid < activeSID {
+		if sid < activeSIDAsOfStart {
 			sids = append(sids, sid)
 		}
 	}
@@ -111,44 +111,54 @@ func (db *DB) compactLog() error {
 		return sids[i] < sids[j]
 	})
 
-	var fw *os.File
-	var fwEnc *walRecordEncoder
-	var wSID segmentID
+	var dst *os.File
+	var dstSID segmentID
+	var dstOffset int64
+	var encoder *walRecordEncoder
 	var firstNewCompactedSID segmentID
-	var fwOffset int64
-	for _, rSID := range sids {
-		fr, err := os.Open(filepath.Join(db.dir, rSID.Filename()))
+	for _, srcSID := range sids {
+		src, err := os.Open(filepath.Join(db.dir, srcSID.Filename()))
 		if err != nil {
-			_ = fw.Close() // ignore error, nothing was written to it
+			if dst != nil {
+				if err := syncAndClose(dst); err != nil {
+					return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
+				}
+			}
 			return fmt.Errorf("opening segment file for reading: %v", err)
 		}
 
-		dec := newWALRecordDecoder(fr)
-		var frOffset int64
+		decoder := newWALRecordDecoder(src)
+		var srcOffset int64
 		for {
 			// Decode the record.
 			var rec walRecord
-			rn, err := dec.Decode(&rec)
+			nRead, err := decoder.Decode(&rec)
 			if err != nil {
-				_ = fr.Close() // ignore error, read-only file
+				_ = src.Close() // ignore error, read-only file
 
 				if errors.Is(err, io.EOF) {
 					break
+				}
+
+				if dst != nil {
+					if err := syncAndClose(dst); err != nil {
+						return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
+					}
 				}
 
 				// Either there was a partial write or the segment file was
 				// corrupted.
 				return fmt.Errorf(
 					"decoding record starting at byte %d in segment file %s: %w",
-					frOffset,
-					fr.Name(),
+					srcOffset,
+					src.Name(),
 					err,
 				)
 			}
 
 			// Skip if expired.
 			if ttl, _ := rec.TTL(); ttl <= 0 {
-				frOffset += rn
+				srcOffset += nRead
 				continue
 			}
 
@@ -156,52 +166,58 @@ func (db *DB) compactLog() error {
 			key := string(rec.Key)
 			db.mu.RLock()
 			loc, ok := db.index[key]
-			if !ok || loc.SegmentID != rSID || loc.Offset != frOffset {
+			if !ok || loc.SegmentID != srcSID || loc.Offset != srcOffset {
 				db.mu.RUnlock()
-				frOffset += rn
+				srcOffset += nRead
 				continue
 			}
 			db.mu.RUnlock()
 
 			// Create a new segment if necessary.
-			if fw == nil || fwEnc == nil || fwOffset+rec.Size() > db.cfg.MaxSegmentSize {
+			if dst == nil || encoder == nil || dstOffset+rec.Size() > db.cfg.MaxSegmentSize {
 				db.mu.RLock()
-				wSID = db.nextCompactedSegmentID()
+				dstSID = db.nextCompactedSegmentID()
 				db.mu.RUnlock()
 
-				if fw != nil {
-					if err := syncAndClose(fw); err != nil {
+				if dst != nil {
+					if err := syncAndClose(dst); err != nil {
 						return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
 					}
 				} else {
-					firstNewCompactedSID = wSID
+					firstNewCompactedSID = dstSID
 				}
 
 				var err error
-				fw, err = os.OpenFile(filepath.Join(db.dir, wSID.Filename()), segFileFlag, segFileMode)
+				dst, err = os.OpenFile(filepath.Join(db.dir, dstSID.Filename()), segFileFlag, segFileMode)
 				if err != nil {
 					return fmt.Errorf("opening new compacted segment file for writing: %v", err)
 				}
 
-				fwEnc = newWALRecordEncoder(fw)
+				encoder = newWALRecordEncoder(dst)
 
-				fr, err := os.Open(filepath.Join(db.dir, wSID.Filename()))
+				dstROnly, err := os.Open(filepath.Join(db.dir, dstSID.Filename()))
 				if err != nil {
-					_ = fw.Close() // ignore error, nothing was written to it
+					_ = dst.Close() // ignore error, nothing was written to it
 					return fmt.Errorf("opening new compacted segment file for reading: %v", err)
 				}
 
 				db.mu.Lock()
-				db.frs[wSID] = fr
+				db.frs[dstSID] = dstROnly
 				db.mu.Unlock()
 
-				fwOffset = 0
+				dstOffset = 0
 			}
 
 			// Encode the record.
-			wn, err := fwEnc.Encode(rec)
+			nWritten, err := encoder.Encode(rec)
 			if err != nil {
-				if wn <= 0 || wn >= rec.Size() {
+				if dst != nil {
+					if err := syncAndClose(dst); err != nil {
+						return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
+					}
+				}
+
+				if nWritten <= 0 || nWritten >= rec.Size() {
 					return err
 				}
 
@@ -212,42 +228,42 @@ func (db *DB) compactLog() error {
 				db.writeClosed = fmt.Errorf(
 					"%w: preventing further writes due to invalid record: record starting at byte %d in segment file %s: %w",
 					ErrDatabaseReadOnly,
-					fwOffset,
-					wSID.Filename(),
+					dstOffset,
+					dstSID.Filename(),
 					ErrPartialWrite,
 				)
 
 				return fmt.Errorf(
 					"writing record starting at byte %d in segment file %s: %w: %w",
-					fwOffset,
-					wSID.Filename(),
+					dstOffset,
+					dstSID.Filename(),
 					ErrPartialWrite,
 					err,
 				)
 			}
 
 			// Update the index.
-			loc.SegmentID = wSID
-			loc.Offset = fwOffset
+			loc.SegmentID = dstSID
+			loc.Offset = dstOffset
 
 			db.mu.Lock()
 			db.index[key] = loc
 			db.mu.Unlock()
 
-			frOffset += rn
-			fwOffset += wn
+			srcOffset += nRead
+			dstOffset += nWritten
 		}
 	}
 
-	if fw != nil {
-		if err := syncAndClose(fw); err != nil {
+	if dst != nil {
+		if err := syncAndClose(dst); err != nil {
 			return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
 		}
 	}
 
 	db.mu.Lock()
 	for sid, fr := range db.frs {
-		if sid < firstNewCompactedSID || (!sid.Compacted() && sid < activeSID) {
+		if sid < firstNewCompactedSID || (!sid.Compacted() && sid < activeSIDAsOfStart) {
 			delete(db.frs, sid)
 			_ = fr.Close()           // ignore error, read-only file
 			_ = os.Remove(fr.Name()) // ignore error
