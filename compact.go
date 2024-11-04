@@ -119,10 +119,8 @@ func (db *DB) compactLog() error {
 	for _, srcSID := range sids {
 		src, err := os.Open(filepath.Join(db.dir, srcSID.Filename()))
 		if err != nil {
-			if dst != nil {
-				if err := syncAndClose(dst); err != nil {
-					return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
-				}
+			if err := syncAndClose(dst); err != nil {
+				return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
 			}
 			return fmt.Errorf("opening segment file for reading: %v", err)
 		}
@@ -134,16 +132,13 @@ func (db *DB) compactLog() error {
 			var rec walRecord
 			nRead, err := decoder.Decode(&rec)
 			if err != nil {
-				_ = src.Close() // ignore error, read-only file
-
 				if errors.Is(err, io.EOF) {
 					break
 				}
 
-				if dst != nil {
-					if err := syncAndClose(dst); err != nil {
-						return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
-					}
+				_ = src.Close() // ignore error, read-only file
+				if err := syncAndClose(dst); err != nil {
+					return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
 				}
 
 				// Either there was a partial write or the segment file was
@@ -179,17 +174,19 @@ func (db *DB) compactLog() error {
 				dstSID = db.nextCompactedSegmentID()
 				db.mu.RUnlock()
 
-				if dst != nil {
-					if err := syncAndClose(dst); err != nil {
-						return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
-					}
-				} else {
+				if dst == nil {
 					firstNewCompactedSID = dstSID
+				}
+
+				if err := syncAndClose(dst); err != nil {
+					_ = src.Close() // ignore error, read-only file
+					return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
 				}
 
 				var err error
 				dst, err = os.OpenFile(filepath.Join(db.dir, dstSID.Filename()), segFileFlag, segFileMode)
 				if err != nil {
+					_ = src.Close() // ignore error, read-only file
 					return fmt.Errorf("opening new compacted segment file for writing: %v", err)
 				}
 
@@ -197,6 +194,7 @@ func (db *DB) compactLog() error {
 
 				dstROnly, err := os.Open(filepath.Join(db.dir, dstSID.Filename()))
 				if err != nil {
+					_ = src.Close() // ignore error, read-only file
 					_ = dst.Close() // ignore error, nothing was written to it
 					return fmt.Errorf("opening new compacted segment file for reading: %v", err)
 				}
@@ -211,10 +209,9 @@ func (db *DB) compactLog() error {
 			// Encode the record.
 			nWritten, err := encoder.Encode(rec)
 			if err != nil {
-				if dst != nil {
-					if err := syncAndClose(dst); err != nil {
-						return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
-					}
+				_ = src.Close() // ignore error, read-only file
+				if err := syncAndClose(dst); err != nil {
+					return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
 				}
 
 				if nWritten <= 0 || nWritten >= rec.Size() {
@@ -257,12 +254,12 @@ func (db *DB) compactLog() error {
 			srcOffset += nRead
 			dstOffset += nWritten
 		}
+
+		_ = src.Close() // ignore error, read-only file
 	}
 
-	if dst != nil {
-		if err := syncAndClose(dst); err != nil {
-			return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
-		}
+	if err := syncAndClose(dst); err != nil {
+		return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
 	}
 
 	db.mu.Lock()

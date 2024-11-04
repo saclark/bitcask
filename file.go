@@ -19,6 +19,9 @@ const (
 )
 
 func syncAndClose(f *os.File) error {
+	if f == nil {
+		return nil
+	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close() // try to close, ignore error
 		return fmt.Errorf("syncing %s: %v", f.Name(), err)
