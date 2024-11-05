@@ -35,69 +35,23 @@ func (e *LogCompactionError) Unwrap() error {
 // maximum size given by [Config.MaxSegmentSize]. However, this method allows
 // callers to manually trigger a log compaction at will.
 func (db *DB) CompactLog() (bool, error) {
-	db.mu.RLock()
-	if db.closed != nil {
-		defer db.mu.RUnlock()
-		return false, db.closed
-	}
-	db.mu.RUnlock()
+	select {
+	case _, ok := <-db.compacting:
+		if !ok {
+			db.mu.RLock()
+			defer db.mu.RUnlock()
+			return false, db.closed
+		}
 
-	c := make(chan error)
-	if ok := db.triggerLogCompaction(c); !ok {
+		db.emit("log compaction: started")
+		defer func() {
+			db.compacting <- struct{}{}
+		}()
+	default:
 		return false, nil
 	}
-	return true, <-c
-}
 
-// triggerLogCompaction triggers a log compaction job in the background unless
-// one is already running. It returns true if a job was triggered, otherwise
-// false.
-//
-// The result of the triggered job is sent on c. Callers who do not intend to
-// recieve the result may pass nil.
-//
-// FIXME: Coordinate log compaction process with potential call to db.Close().
-func (db *DB) triggerLogCompaction(c chan error) bool {
-	select {
-	case db.compactChan <- c:
-		return true
-	default:
-		return false
-	}
-}
-
-func (db *DB) serveLogCompaction() {
-	for {
-		select {
-		case c := <-db.compactChan:
-			db.emit("log compaction: started")
-
-			err := db.compactLog()
-			switch {
-			case errors.Is(err, ErrDatabaseClosed):
-				db.emit(fmt.Sprintf("log compaction: skipped: %v", ErrDatabaseClosed))
-			case err != nil:
-				db.emit(&LogCompactionError{err: fmt.Errorf("log compaction: failed: %w", err)})
-			default:
-				db.emit("log compaction: succeeded")
-			}
-
-			if c != nil {
-				c <- err
-			}
-		case <-db.closeChan:
-			return
-		}
-	}
-}
-
-func (db *DB) compactLog() error {
 	db.mu.RLock()
-	if db.closed != nil {
-		db.mu.RUnlock()
-		return db.closed
-	}
-
 	activeSIDAsOfStart := db.fwID
 	var sids []segmentID
 	for sid := range db.frs {
@@ -120,9 +74,12 @@ func (db *DB) compactLog() error {
 		src, err := os.Open(filepath.Join(db.dir, srcSID.Filename()))
 		if err != nil {
 			if err := syncAndClose(dst); err != nil {
-				return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
+				return true, db.compactionFailed(fmt.Errorf(
+					"syncing and closing compacted segment file opened for writing: %v",
+					err,
+				))
 			}
-			return fmt.Errorf("opening segment file for reading: %v", err)
+			return true, db.compactionFailed(fmt.Errorf("opening segment file for reading: %v", err))
 		}
 
 		decoder := newWALRecordDecoder(src)
@@ -138,17 +95,20 @@ func (db *DB) compactLog() error {
 
 				_ = src.Close() // ignore error, read-only file
 				if err := syncAndClose(dst); err != nil {
-					return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
+					return true, db.compactionFailed(fmt.Errorf(
+						"syncing and closing compacted segment file opened for writing: %v",
+						err,
+					))
 				}
 
 				// Either there was a partial write or the segment file was
 				// corrupted.
-				return fmt.Errorf(
+				return true, db.compactionFailed(fmt.Errorf(
 					"decoding record starting at byte %d in segment file %s: %w",
 					srcOffset,
 					src.Name(),
 					err,
-				)
+				))
 			}
 
 			// Skip if expired.
@@ -180,14 +140,20 @@ func (db *DB) compactLog() error {
 
 				if err := syncAndClose(dst); err != nil {
 					_ = src.Close() // ignore error, read-only file
-					return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
+					return true, db.compactionFailed(fmt.Errorf(
+						"syncing and closing compacted segment file opened for writing: %v",
+						err,
+					))
 				}
 
 				var err error
 				dst, err = os.OpenFile(filepath.Join(db.dir, dstSID.Filename()), segFileFlag, segFileMode)
 				if err != nil {
 					_ = src.Close() // ignore error, read-only file
-					return fmt.Errorf("opening new compacted segment file for writing: %v", err)
+					return true, db.compactionFailed(fmt.Errorf(
+						"opening new compacted segment file for writing: %v",
+						err,
+					))
 				}
 
 				encoder = newWALRecordEncoder(dst)
@@ -196,7 +162,10 @@ func (db *DB) compactLog() error {
 				if err != nil {
 					_ = src.Close() // ignore error, read-only file
 					_ = dst.Close() // ignore error, nothing was written to it
-					return fmt.Errorf("opening new compacted segment file for reading: %v", err)
+					return true, db.compactionFailed(fmt.Errorf(
+						"opening new compacted segment file for reading: %v",
+						err,
+					))
 				}
 
 				db.mu.Lock()
@@ -211,11 +180,14 @@ func (db *DB) compactLog() error {
 			if err != nil {
 				_ = src.Close() // ignore error, read-only file
 				if err := syncAndClose(dst); err != nil {
-					return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
+					return true, db.compactionFailed(fmt.Errorf(
+						"syncing and closing compacted segment file opened for writing: %v",
+						err,
+					))
 				}
 
 				if nWritten <= 0 || nWritten >= rec.Size() {
-					return err
+					return true, db.compactionFailed(err)
 				}
 
 				// Partial write, so something is borked. Not ideal, but we'll prevent
@@ -230,13 +202,13 @@ func (db *DB) compactLog() error {
 					ErrPartialWrite,
 				)
 
-				return fmt.Errorf(
+				return true, db.compactionFailed(fmt.Errorf(
 					"writing record starting at byte %d in segment file %s: %w: %w",
 					dstOffset,
 					dstSID.Filename(),
 					ErrPartialWrite,
 					err,
-				)
+				))
 			}
 
 			// Update the index so long as it hasn't changed since we last looked it up.
@@ -259,7 +231,10 @@ func (db *DB) compactLog() error {
 	}
 
 	if err := syncAndClose(dst); err != nil {
-		return fmt.Errorf("syncing and closing compacted segment file opened for writing: %v", err)
+		return true, db.compactionFailed(fmt.Errorf(
+			"syncing and closing compacted segment file opened for writing: %v",
+			err,
+		))
 	}
 
 	db.mu.Lock()
@@ -272,5 +247,11 @@ func (db *DB) compactLog() error {
 	}
 	db.mu.Unlock()
 
-	return nil
+	db.emit("log compaction: succeeded")
+	return true, nil
+}
+
+func (db *DB) compactionFailed(err error) error {
+	db.emit(&LogCompactionError{err: fmt.Errorf("log compaction: failed: %w", err)})
+	return err
 }

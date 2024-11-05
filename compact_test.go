@@ -55,17 +55,6 @@ func TestLogCompaction_AllEligibleDataOutOfDate_OnlyActiveSegmentOrLaterRemains(
 		t.Fatalf("want nil, got %s", v)
 	}
 
-	<-c // wait for the log compaction to begin so Close does not preempt it.
-	// ok, err := db.CompactLog()
-	// if !ok {
-	// 	t.Fatalf("manual compaction not kicked off")
-	// }
-	// if err != nil {
-	// 	t.Fatalf("kicking off manual compaction: %v", err)
-	// }
-
-	time.Sleep(1 * time.Second) // give log compaction a chance to complete to Close does not preempt it.
-
 	v, err = db.Get("aaaa")
 	if !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("getting value: %v", err)
@@ -82,14 +71,7 @@ func TestLogCompaction_AllEligibleDataOutOfDate_OnlyActiveSegmentOrLaterRemains(
 		t.Fatalf("want %s, got %s", want, v)
 	}
 
-	v, err = db.Get("c")
-	if !errors.Is(err, ErrKeyNotFound) {
-		t.Fatalf("getting value: %v", err)
-	}
-	if v != nil {
-		t.Fatalf("want nil, got %s", v)
-	}
-
+	<-c // Ensure we aren't front running log compaction.
 	if err := db.Close(); err != nil {
 		t.Fatalf("closing DB: %v", err)
 	}

@@ -63,8 +63,7 @@ type DB struct {
 	frs         map[segmentID]*os.File // Set of segments opened for reading.
 	index       map[string]recordLoc   // Records indexed by key.
 	mu          rwLocker
-	compactChan chan chan error
-	closeChan   chan struct{}
+	compacting  chan struct{}
 	closed      error
 	writeClosed error
 }
@@ -213,22 +212,21 @@ func Open(path string, config Config) (*DB, error) {
 	}
 
 	db := &DB{
-		cfg:         config,
-		dir:         path,
-		emit:        config.HandleEvent,
-		fw:          fw,
-		fwID:        fwID,
-		fwEncoder:   newWALRecordEncoder(fw),
-		fwOffset:    info.Size(),
-		frs:         frs,
-		index:       index,
-		mu:          mu,
-		compactChan: make(chan chan error),
-		closeChan:   make(chan struct{}),
+		cfg:        config,
+		dir:        path,
+		emit:       config.HandleEvent,
+		fw:         fw,
+		fwID:       fwID,
+		fwEncoder:  newWALRecordEncoder(fw),
+		fwOffset:   info.Size(),
+		frs:        frs,
+		index:      index,
+		mu:         mu,
+		compacting: make(chan struct{}, 1),
 	}
 
-	// Start listening for log compaction triggers in the background.
-	go db.serveLogCompaction()
+	// Mark log compaction as available to run.
+	db.compacting <- struct{}{}
 
 	return db, nil
 }
@@ -322,7 +320,7 @@ func (db *DB) put(key string, value []byte, ttl time.Duration) error {
 			return fmt.Errorf("rotating active segment: %w", err)
 		}
 		if !db.cfg.DisableAutomaticLogCompaction {
-			db.triggerLogCompaction(nil)
+			go db.CompactLog()
 		}
 	}
 
@@ -404,18 +402,18 @@ func (db *DB) Sync() error {
 // to Close or other methods such as [DB.Get] or [DB.Put] will return
 // [ErrDatabaseClosed].
 func (db *DB) Close() error {
-	db.mu.Lock()
-	if db.closed != nil {
-		defer db.mu.Unlock()
-		return db.closed
+	// Wait for any running log compaction job to complete and prevent another
+	// log compaction from running.
+	if _, ok := <-db.compacting; ok {
+		close(db.compacting)
 	}
 
-	// Signal the background goroutine to stop. This must be done *after*
-	// releasing the lock and by sending on, rather than closing, the channel in
-	// order to wait for any log compaction job waiting to obtain a lock to
-	// complete refore we return.
-	defer func() { db.closeChan <- struct{}{} }()
+	db.mu.Lock()
 	defer db.mu.Unlock()
+
+	if db.closed != nil {
+		return db.closed
+	}
 
 	db.closed = ErrDatabaseClosed
 	db.writeClosed = ErrDatabaseClosed

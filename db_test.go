@@ -76,7 +76,6 @@ func TestOpen_LocksDB(t *testing.T) {
 	}
 }
 
-// TODO: Log compaction no longer stops the world so this is now flaky.
 func TestDB_SingleThreaded(t *testing.T) {
 	config := DefaultConfig()
 	config.MaxKeySize = 4
@@ -145,7 +144,6 @@ func TestDB_SingleThreaded(t *testing.T) {
 		t.Fatalf("reading directory: %v", err)
 	}
 
-	// TODO: Depends on when the log compaction goroutine runs so this is flaky.
 	if want := 3; len(segs) != want {
 		t.Fatalf("want %d files, got %d", want, len(segs))
 	}

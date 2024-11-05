@@ -1,7 +1,7 @@
 # TODO
 
-* [ ] Prevent or add coordinatation/cancelation when attempting to close the DB during a log compaction.
 * [ ] Produce .index files during merge and use them to Open DB.
+* [ ] Allow cancelation of log compaction? Replace Close() with Shudown(context.Context)?
 * [ ] Allow DB to be opened in read-only mode.
 * [ ] What to do if a file Sync() errs?
 * [ ] Cleanup/improve errors (messages, data, which to export, etc.). Create an InvalidConfigError type?
