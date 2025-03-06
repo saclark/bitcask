@@ -61,24 +61,25 @@ func (r *walRecord) Size() int64 {
 var maxExpiry = uint64(1<<63 - 1) // max int64 == max time.Duration
 
 // TTL returns the remaining time to live for the record and a boolean
-// indicating whether the record actually has an associated expiry. Records
-// without an associated expiry return the maximum time.Duration. Records that
-// have expired return 0.
-func (r *walRecord) TTL() (time.Duration, bool) {
+// indicating whether the record has an associated expiry. Records without an
+// associated expiry return the maximum time.Duration. Records that have expired
+// return 0.
+func (r *walRecord) TTL() (ttl time.Duration, hasExpiry bool) {
 	return expiryTTL(r.Expiry)
 }
 
-// expiryTTL returns the remaining time to live until expiry and a boolean
-// indicating whether the expiry is valid. An expiry in the past returns 0.
-// An invalid expiry return the maximum time.Duration.
-func expiryTTL(expiry uint64) (time.Duration, bool) {
+// expiryTTL returns the duration remaining until expiry and a boolean
+// indicating whether the expiry is > 0. An expiry of 0 indicates "no expiry"
+// and the maximum time.Duration is returned. An expiry in the past returns a
+// duration of 0.
+func expiryTTL(expiry uint64) (ttl time.Duration, hasExpiry bool) {
 	if expiry == 0 {
 		return time.Duration(maxExpiry), false
 	}
 	if expiry > maxExpiry {
 		expiry = maxExpiry
 	}
-	ttl := time.Unix(int64(expiry), 0).Sub(time.Now().UTC())
+	ttl = time.Unix(int64(expiry), 0).Sub(time.Now().UTC())
 	if ttl < 0 {
 		ttl = 0
 	}
