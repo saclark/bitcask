@@ -44,12 +44,8 @@ func assertOp(t *testing.T, db *DB, op string, key string, value []byte, ttl tim
 			t.Fatalf("Get('%s'): got '%s', want '%s'", key, v, value)
 		}
 	case "Put":
-		if err := db.Put(key, value); !errors.Is(err, opErr) {
-			t.Fatalf("Put('%s', '%s'): got err '%v', want err '%v'", key, value, err, opErr)
-		}
-	case "PutWithTTL":
-		if err := db.PutWithTTL(key, value, ttl); !errors.Is(err, opErr) {
-			t.Fatalf("PutWithTTL('%s', '%s', '%v'): got err '%v', want err '%v'", key, value, ttl, err, opErr)
+		if err := db.Put(key, value, ttl); !errors.Is(err, opErr) {
+			t.Fatalf("Put('%s', '%s', '%v'): got err '%v', want err '%v'", key, value, ttl, err, opErr)
 		}
 	case "Del":
 		if err := db.Delete(key); !errors.Is(err, opErr) {
@@ -208,7 +204,7 @@ func TestGet_WhileCompactingLog(t *testing.T) {
 	defer os.RemoveAll(path)
 	defer db.Close()
 
-	err = db.Put("a", bytes.Repeat([]byte{'a'}, vsize))
+	err = db.Put("a", bytes.Repeat([]byte{'a'}, vsize), 0)
 	if err != nil {
 		t.Fatalf("Put(\"a\", ...): %v", err)
 	}
@@ -218,7 +214,7 @@ func TestGet_WhileCompactingLog(t *testing.T) {
 	go func() {
 		c <- nil
 		for range 10 {
-			if err := db.Put("b", want); err != nil {
+			if err := db.Put("b", want, 0); err != nil {
 				c <- err
 				return
 			}
@@ -255,12 +251,12 @@ func TestGet_TruncatedRecord(t *testing.T) {
 	defer db.Close()
 
 	k1, v1 := "aaaa", []byte("bbbb")
-	if err := db.Put(k1, v1); err != nil {
+	if err := db.Put(k1, v1, 0); err != nil {
 		t.Fatalf("Put('%s', '%s'): %v", k1, v1, err)
 	}
 
 	k2, v2 := "cccc", []byte("dddd")
-	if err := db.Put(k2, v2); err != nil {
+	if err := db.Put(k2, v2, 0); err != nil {
 		t.Fatalf("Put('%s', '%s'): %v", k2, v2, err)
 	}
 
@@ -375,7 +371,7 @@ func TestClose_WhilePutting(t *testing.T) {
 			go func() {
 				c <- nil
 				for i := 0; ; i++ {
-					if err := db.Put(k, bytes.Repeat([]byte{byte(i)}, tc.vLen)); err != nil {
+					if err := db.Put(k, bytes.Repeat([]byte{byte(i)}, tc.vLen), 0); err != nil {
 						c <- err
 						return
 					}
@@ -406,7 +402,7 @@ func TestClose_WhileGetting(t *testing.T) {
 	defer os.RemoveAll(path)
 
 	k, v := "foo", []byte("bar")
-	if err := db.Put(k, v); err != nil {
+	if err := db.Put(k, v, 0); err != nil {
 		t.Fatalf("Put(): %v", err)
 	}
 
@@ -449,7 +445,7 @@ func TestClose_WhileDeleting(t *testing.T) {
 
 	v := []byte("v")
 	for i := 0; i < 1000; i++ {
-		if err := db.Put(strconv.Itoa(i), v); err != nil {
+		if err := db.Put(strconv.Itoa(i), v, 0); err != nil {
 			t.Fatalf("Put(): %v", err)
 		}
 	}
@@ -520,7 +516,7 @@ func TestClose_DBMethodsReturnErrDatabaseClosed(t *testing.T) {
 	if _, err := db.Get("foo"); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("Get: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
-	if err := db.Put("foo", []byte("bar")); !errors.Is(err, ErrDatabaseClosed) {
+	if err := db.Put("foo", []byte("bar"), 0); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("Put: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
 	if err := db.Delete("foo"); !errors.Is(err, ErrDatabaseClosed) {
@@ -586,7 +582,7 @@ func BenchmarkGet(b *testing.B) {
 			}
 			defer db.Close()
 
-			err = db.Put(key, value)
+			err = db.Put(key, value, 0)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -646,7 +642,7 @@ func BenchmarkPut(b *testing.B) {
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				if err := db.Put(key, value); err != nil {
+				if err := db.Put(key, value, 0); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -695,7 +691,7 @@ func BenchmarkPutSync(b *testing.B) {
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				if err := db.Put(key, value); err != nil {
+				if err := db.Put(key, value, 0); err != nil {
 					b.Fatal(err)
 				}
 				if err = db.Sync(); err != nil {

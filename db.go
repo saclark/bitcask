@@ -264,29 +264,16 @@ func (db *DB) indexGet(key string) (recordLoc, io.ReaderAt, error) {
 	return rec, db.frs[rec.SegmentID], nil
 }
 
-// Put inserts or overwrites the value associated with key.
-func (db *DB) Put(key string, value []byte) error {
+// Put inserts or overwrites the value associated with key along with a time to
+// live (TTL) duration, after which the key-value pair is considered expired. A
+// TTL == 0 indicates the key-value pair should never expire. A TTL < 0 deletes
+// the key-value pair.
+func (db *DB) Put(key string, value []byte, ttl time.Duration) error {
 	if len(key) > db.cfg.MaxKeySize {
 		return ErrKeyTooLarge
 	}
 	if len(value) > db.cfg.MaxValueSize {
 		return ErrValueTooLarge
-	}
-	return db.put(key, value, 0)
-}
-
-// PutWithTTL inserts or overwrites the value associated with key along with a
-// time to live (TTL) duration, after which the value is considered expired.
-// Values with a TTL <= 0 are deleted.
-func (db *DB) PutWithTTL(key string, value []byte, ttl time.Duration) error {
-	if len(key) > db.cfg.MaxKeySize {
-		return ErrKeyTooLarge
-	}
-	if len(value) > db.cfg.MaxValueSize {
-		return ErrValueTooLarge
-	}
-	if ttl <= 0 {
-		value = nil
 	}
 	return db.put(key, value, ttl)
 }
