@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 const (
@@ -17,6 +18,25 @@ const (
 	minCompactedSegmentID   = segmentID(0x00)
 	minUncompactedSegmentID = segmentID(0x8000000)
 )
+
+func acquireDirLock(dirPath string) error {
+	lockPath := filepath.Join(dirPath, lockFilename)
+	if _, err := os.OpenFile(lockPath, lockFileFlag, lockFileMode); err != nil {
+		if os.IsExist(err) {
+			return ErrDatabaseLocked
+		}
+		return err
+	}
+	return nil
+}
+
+func releaseDirLock(dirPath string) error {
+	err := os.Remove(filepath.Join(dirPath, lockFilename))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing %s file: %v", lockFilename, err)
+	}
+	return nil
+}
 
 func syncAndClose(f *os.File) error {
 	if f == nil {

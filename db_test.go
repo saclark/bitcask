@@ -72,6 +72,51 @@ func TestOpen_LocksDB(t *testing.T) {
 	}
 }
 
+func TestOpen_FailsAfterLockingDB_UnlocksDB(t *testing.T) {
+	// Create a DB.
+	config := DefaultConfig()
+	path, db, err := openTmpDB(t, "TestOpen_FailsAfterLockingDB_UnlocksDB", config)
+	if err != nil {
+		t.Fatalf("setting up tmp DB directory: %v", err)
+	}
+	defer os.RemoveAll(path)
+	defer db.Close()
+
+	// Insert an improperly named segment file, causing Open to fail after it's
+	// already obtained a lock on the dir.
+	invalidSegPath := filepath.Join(path, "invalid.seg")
+	if _, err := os.Create(invalidSegPath); err != nil {
+		t.Fatalf("creating invalid segment file: %v", err)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing the database: %v", err)
+	}
+
+	// Try (and fail) to open the DB.
+	db, err = Open(path, config)
+	if err == nil {
+		db.Close()
+		t.Fatal("test setup failed: open succeeded by was expected to fail")
+	}
+	if errors.Is(err, ErrDatabaseLocked) {
+		t.Fatal("test setup failed: database already locked")
+	}
+
+	// Remove the invalid segment so the subsequent Open can succeed.
+	if err := os.Remove(invalidSegPath); err != nil {
+		t.Fatalf("test setup failed: failed to remove invalid segment file: %v", err)
+	}
+
+	// Should succeed if the lock file was cleaned up by the prior Open as
+	// expected.
+	db, err = Open(path, config)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+}
+
 func TestDB_SingleThreaded(t *testing.T) {
 	config := DefaultConfig()
 	config.MaxKeySize = 4

@@ -86,17 +86,20 @@ func Open(path string, config Config) (*DB, error) {
 		return nil, fmt.Errorf("creating directory: %v", err)
 	}
 
-	// Lock the DB.
-	lockPath := filepath.Join(path, lockFilename)
-	if _, err := os.OpenFile(lockPath, lockFileFlag, lockFileMode); err != nil {
-		if os.IsExist(err) {
-			return nil, ErrDatabaseLocked
-		}
+	if err := acquireDirLock(path); err != nil {
 		return nil, err
 	}
 
-	// FIXME: Be sure to remove the DB lock if any errors occur below.
+	db, err := open(path, config)
+	if err != nil {
+		_ = releaseDirLock(path)
+		return nil, err
+	}
 
+	return db, nil
+}
+
+func open(path string, config Config) (*DB, error) {
 	// List all segment filenames.
 	fns, err := filepath.Glob(filepath.Join(path, "*"+segFileExt))
 	if err != nil {
@@ -413,9 +416,8 @@ func (db *DB) Close() error {
 		_ = fr.Close() // ignore error, read-only file
 	}
 
-	err := os.Remove(filepath.Join(db.dir, lockFilename))
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing %s file: %v", lockFilename, err)
+	if err := releaseDirLock(db.dir); err != nil {
+		return fmt.Errorf("releasing directory lock: %v", err)
 	}
 
 	return nil
