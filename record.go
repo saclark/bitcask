@@ -215,12 +215,19 @@ func readRecordValue(ra io.ReaderAt, recordOff, recordSize int64) ([]byte, error
 	return readRecordValueUnbuffered(ra, recordOff, recordSize)
 }
 
-// Shouldn't happen, but better than panicing in case it did.
-var errInvalidRecordSize = errors.New("bitcask: invalid record size")
+// unreachableError signifies that a line of code assumed to be unreachable has
+// been reached.
+type unreachableError struct {
+	detail string
+}
+
+func (e *unreachableError) Error() string {
+	return fmt.Sprintf("bitcask: reached unreachable code: %s", e.detail)
+}
 
 func readRecordValueUnbuffered(ra io.ReaderAt, recordOff, recordSize int64) ([]byte, error) {
 	if recordSize < metaSize {
-		return nil, errInvalidRecordSize
+		return nil, &unreachableError{detail: fmt.Sprintf("readRecordValueUnbuffered: invalid record size: %d", recordSize)}
 	}
 
 	b := make([]byte, recordSize)
@@ -252,7 +259,7 @@ func readRecordValueUnbuffered(ra io.ReaderAt, recordOff, recordSize int64) ([]b
 
 func readRecordValueBuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []byte, err error) {
 	if recordSize < metaSize {
-		return nil, errInvalidRecordSize
+		return nil, &unreachableError{detail: fmt.Sprintf("readRecordValueBuffered: invalid record size: %d", recordSize)}
 	}
 
 	sr := io.NewSectionReader(ra, recordOff, recordSize)
