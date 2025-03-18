@@ -35,7 +35,7 @@ func TestLogCompaction_AllEligibleDataOutOfDate_OnlyActiveSegmentOrLaterRemains(
 	assertOp(t, db, "Put", "aaaa", []byte("0000"), 0, nil) // Segment = 28 bytes, index = {"aaaa"}
 	assertOp(t, db, "Del", "aaaa", nil, 0, nil)            // Segment = 52 bytes, index = {}
 	assertOp(t, db, "Put", "bbbb", []byte("1111"), 0, nil) // Triggers segment rotation and compaction of previous segment.
-	assertOp(t, db, "Put", "c", []byte("2"), 1*time.Second, nil)
+	assertOp(t, db, "PutWithTTL", "c", []byte("2"), 1*time.Second, nil)
 
 	v, err := db.Get("c")
 	if err != nil {

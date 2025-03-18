@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math"
 	"time"
 )
 
@@ -35,21 +36,76 @@ func recordSize(keySize, valueSize int) int64 {
 	return headerSize + int64(keySize) + int64(valueSize) + crcSize
 }
 
+// expiryTimestamp is a Unix time in nanoseconds. The minimum int64 value
+// (-1 << 63) signifies "no expiry".
+type expiryTimestamp int64
+
+const (
+	// noExpiry signifies expiry should never occur
+	noExpiry  expiryTimestamp = math.MinInt64
+	minExpiry                 = math.MinInt64 + 1
+	maxExpiry                 = math.MaxInt64
+)
+
+func ttlExpiry(ttl time.Duration) expiryTimestamp {
+	now := time.Now().UTC()
+	nowNano := now.UnixNano()
+
+	if nowNano < 0 {
+		if int64(ttl) < minExpiry-nowNano {
+			return minExpiry
+		}
+	} else {
+		if int64(ttl) > maxExpiry-nowNano {
+			return maxExpiry
+		}
+	}
+
+	return expiryTimestamp(now.Add(ttl).UnixNano())
+}
+
+func mapUint64ToExpiry(i uint64) expiryTimestamp {
+	if i > maxExpiry {
+		return expiryTimestamp(i - maxExpiry - 1)
+	}
+	return expiryTimestamp(i) - maxExpiry - 1
+}
+
+func (t expiryTimestamp) mapToUInt64() uint64 {
+	if t < 0 {
+		return uint64(t + maxExpiry + 1)
+	}
+	return uint64(t) + maxExpiry + 1
+}
+
+// TTL returns the duration remaining until t and a boolean indicating whether
+// the value of t indicates "no expiry" (-1 << 63). The maximum [time.Duration]
+// is returned when t indicates "no expiry". An expiry in the past returns a
+// negative duration. If the result exceeds the maximum (or minimum) value that
+// can be stored in a [time.Duration], the maximum (or minimum) duration will be
+// returned.
+func (t expiryTimestamp) TTL() (ttl time.Duration, hasExpiry bool) {
+	if t == noExpiry {
+		return time.Duration(maxExpiry), false
+	}
+	return time.Unix(0, int64(t)).Sub(time.Now().UTC()), true
+}
+
 // walRecord represents the data written to a segment for a single key-value
 // pair.
 type walRecord struct {
-	Expiry uint64
 	Key    []byte
 	Value  []byte
+	Expiry expiryTimestamp
 }
 
-// newWALRecord constructs a new [walRecord] value.
-func newWALRecord(key []byte, value []byte, ttl time.Duration) walRecord {
-	rec := walRecord{Key: key, Value: value}
-	if ttl != 0 {
-		rec.Expiry = uint64(time.Now().UTC().Add(ttl).Unix())
+// newWALRecord constructs a new [walRecord] value without an expiry.
+func newWALRecord(key []byte, value []byte, expiry expiryTimestamp) walRecord {
+	return walRecord{
+		Key:    key,
+		Value:  value,
+		Expiry: expiry,
 	}
-	return rec
 }
 
 // Size returns the byte size of the full [walRecord] when written to the
@@ -58,32 +114,14 @@ func (r *walRecord) Size() int64 {
 	return headerSize + int64(len(r.Key)) + int64(len(r.Value)) + crcSize
 }
 
-var maxExpiry = uint64(1<<63 - 1) // max int64 == max time.Duration
-
 // TTL returns the remaining time to live for the record and a boolean
 // indicating whether the record has an associated expiry. Records without an
-// associated expiry return the maximum time.Duration. Records that have expired
-// return 0.
+// expiry always return the maximum [time.Duration]. Records that expired in the
+// past return a negative duration. If the result exceeds the maximum (or
+// minimum) value that can be stored in a [time.Duration], the maximum (or
+// minimum) duration will be returned.
 func (r *walRecord) TTL() (ttl time.Duration, hasExpiry bool) {
-	return expiryTTL(r.Expiry)
-}
-
-// expiryTTL returns the duration remaining until expiry and a boolean
-// indicating whether the expiry is > 0. An expiry of 0 indicates "no expiry"
-// and the maximum time.Duration is returned. An expiry in the past returns a
-// duration of 0.
-func expiryTTL(expiry uint64) (ttl time.Duration, hasExpiry bool) {
-	if expiry == 0 {
-		return time.Duration(maxExpiry), false
-	}
-	if expiry > maxExpiry {
-		expiry = maxExpiry
-	}
-	ttl = time.Unix(int64(expiry), 0).Sub(time.Now().UTC())
-	if ttl < 0 {
-		ttl = 0
-	}
-	return ttl, true
+	return r.Expiry.TTL()
 }
 
 // walRecordEncoder writes [walRecord] values to an output stream.
@@ -109,7 +147,7 @@ func (e *walRecordEncoder) Encode(rec walRecord) (n int64, err error) {
 	}()
 
 	header := make([]byte, headerSize)
-	binary.BigEndian.PutUint64(header[expOff:expEnd], rec.Expiry)
+	binary.BigEndian.PutUint64(header[expOff:expEnd], rec.Expiry.mapToUInt64())
 	binary.BigEndian.PutUint32(header[kszOff:kszEnd], uint32(len(rec.Key)))
 	binary.BigEndian.PutUint32(header[vszOff:vszEnd], uint32(len(rec.Value)))
 
@@ -201,7 +239,9 @@ func (d *walRecordDecoder) Decode(rec *walRecord) (n int64, err error) {
 		return n, ErrCorruptRecord
 	}
 
-	rec.Expiry = binary.BigEndian.Uint64(header[expOff:expEnd])
+	expiry := mapUint64ToExpiry(binary.BigEndian.Uint64(header[expOff:expEnd]))
+
+	rec.Expiry = expiry
 	rec.Key = k
 	rec.Value = v
 
@@ -246,8 +286,8 @@ func readRecordValueUnbuffered(ra io.ReaderAt, recordOff, recordSize int64) ([]b
 		return nil, ErrCorruptRecord
 	}
 
-	expiry := binary.BigEndian.Uint64(b[expOff:expEnd])
-	if ttl, _ := expiryTTL(expiry); ttl <= 0 {
+	expiry := mapUint64ToExpiry(binary.BigEndian.Uint64(b[expOff:expEnd]))
+	if ttl, _ := expiry.TTL(); ttl <= 0 {
 		return nil, ErrRecordExpired
 	}
 
@@ -304,8 +344,8 @@ func readRecordValueBuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []b
 		return nil, ErrCorruptRecord
 	}
 
-	expiry := binary.BigEndian.Uint64(header[expOff:expEnd])
-	if ttl, _ := expiryTTL(expiry); ttl <= 0 {
+	expiry := mapUint64ToExpiry(binary.BigEndian.Uint64(header[expOff:expEnd]))
+	if ttl, _ := expiry.TTL(); ttl <= 0 {
 		return nil, ErrRecordExpired
 	}
 

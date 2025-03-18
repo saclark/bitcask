@@ -267,28 +267,42 @@ func (db *DB) indexGet(key string) (recordLoc, io.ReaderAt, error) {
 	return rec, db.frs[rec.SegmentID], nil
 }
 
-// Put inserts or overwrites the value associated with key along with a time to
-// live (TTL) duration, after which the key-value pair is considered expired. A
-// TTL == 0 indicates the key-value pair should never expire. A TTL < 0 deletes
-// the key-value pair.
-func (db *DB) Put(key string, value []byte, ttl time.Duration) error {
+// Put inserts or overwrites the value associated with key and does not expire.
+// A nil value deletes the key-value pair.
+func (db *DB) Put(key string, value []byte) error {
 	if len(key) > db.cfg.MaxKeySize {
 		return ErrKeyTooLarge
 	}
 	if len(value) > db.cfg.MaxValueSize {
 		return ErrValueTooLarge
 	}
-	return db.put(key, value, ttl)
+	return db.put(key, value, noExpiry)
+}
+
+// PutWithTTL inserts or overwrites the value and time to live (TTL) duration
+// associated with key. The key-value pair expires after the ttl duration
+// elapses. A nil value or TTL duration <= 0 deletes the key-value pair.
+func (db *DB) PutWithTTL(key string, value []byte, ttl time.Duration) error {
+	if len(key) > db.cfg.MaxKeySize {
+		return ErrKeyTooLarge
+	}
+	if len(value) > db.cfg.MaxValueSize {
+		return ErrValueTooLarge
+	}
+	if len(value) == 0 || ttl <= 0 {
+		return db.Delete(key)
+	}
+	return db.put(key, value, ttlExpiry(ttl))
 }
 
 // Delete deletes the key-value pair associated with key.
 func (db *DB) Delete(key string) error {
-	return db.put(key, nil, 0)
+	return db.put(key, nil, noExpiry)
 }
 
 // put persists the key-value pair and updates the in-memory index. A nil value
-// or negative TTL deletes the key-value pair.
-func (db *DB) put(key string, value []byte, ttl time.Duration) error {
+// deletes the key-value pair.
+func (db *DB) put(key string, value []byte, expiry expiryTimestamp) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -296,15 +310,13 @@ func (db *DB) put(key string, value []byte, ttl time.Duration) error {
 		return db.writeClosed
 	}
 
-	// Delete the record if value is nil or TTL < 0.
-	if value == nil || ttl < 0 {
+	if len(value) == 0 {
 		if _, ok := db.index[key]; !ok {
 			return nil
 		}
-		value, ttl = nil, 0
 	}
 
-	rec := newWALRecord([]byte(key), value, ttl)
+	rec := newWALRecord([]byte(key), value, expiry)
 	if db.fwOffset+rec.Size() > db.cfg.MaxSegmentSize {
 		if err := db.rotateSegment(); err != nil {
 			return fmt.Errorf("rotating active segment: %w", err)
