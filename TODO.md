@@ -1,11 +1,11 @@
 # TODO
 
 * [ ] Produce .index files during merge and use them to Open DB.
-* [ ] Don't let event handling impact DB operation.
-* [ ] Emit better, more structrued messages and emit more of them (e.g. when segment rotation starts and ends).
-* [ ] Allow DB to be opened in read-only mode.
-* [ ] Allow cancelation of log compaction? Replace Close() with Shudown(context.Context)?
+* [ ] Add configuration options to automatically Sync() after every n seconds and/or n records written.
+* [ ] Allow cancelation of log compaction. Replace Close() with Shudown(context.Context).
 * [ ] Implement `CompactOnOpen` config options, or some means of running a faster, but more memory intensive, log compaction?
+* [ ] Emit better, more structrued event messages and emit more of them (e.g. when segment rotation starts and ends), while also not letting handling of the events impact DB operation.
+* [ ] Allow DB to be opened in read-only mode.
 * [ ] What to do if a file Sync() errs?
 * [ ] Cleanup/improve errors (messages, data, which to export, etc.). Create an InvalidConfigError type?
 * [ ] Fill out the README and documentation.
