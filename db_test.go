@@ -189,8 +189,10 @@ func TestDB_SingleThreaded(t *testing.T) {
 		t.Fatalf("reading directory: %v", err)
 	}
 
-	if want := 3; len(segs) != want {
-		t.Fatalf("want %d files, got %d", want, len(segs))
+	// The exact number of segment files to expect depends on when the log
+	// compaction starts/ends relative to the test.
+	if wantLow, wantHigh := 3, 4; len(segs) < wantLow || len(segs) > wantHigh {
+		t.Fatalf("want between %d and %d files (inclusive), got %d", wantLow, wantHigh, len(segs))
 	}
 
 	for _, seg := range segs {
