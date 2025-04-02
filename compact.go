@@ -71,7 +71,7 @@ func (db *DB) CompactLog() (bool, error) {
 	var encoder *walRecordEncoder
 	var firstNewCompactedSID segmentID
 	for _, srcSID := range sids {
-		src, err := os.Open(filepath.Join(db.dir, srcSID.Filename()))
+		src, err := os.Open(filepath.Join(db.dir.Name(), srcSID.Filename()))
 		if err != nil {
 			if err := syncAndClose(dst); err != nil {
 				return true, db.compactionFailed(fmt.Errorf(
@@ -147,7 +147,7 @@ func (db *DB) CompactLog() (bool, error) {
 				}
 
 				var err error
-				dst, err = os.OpenFile(filepath.Join(db.dir, dstSID.Filename()), segFileFlag, segFileMode)
+				dst, err = createFile(db.dir, dstSID.Filename(), segFileFlag, segFileMode)
 				if err != nil {
 					_ = src.Close() // ignore error, read-only file
 					return true, db.compactionFailed(fmt.Errorf(
@@ -158,7 +158,7 @@ func (db *DB) CompactLog() (bool, error) {
 
 				encoder = newWALRecordEncoder(dst)
 
-				dstROnly, err := os.Open(filepath.Join(db.dir, dstSID.Filename()))
+				dstROnly, err := os.Open(filepath.Join(db.dir.Name(), dstSID.Filename()))
 				if err != nil {
 					_ = src.Close() // ignore error, read-only file
 					_ = dst.Close() // ignore error, nothing was written to it

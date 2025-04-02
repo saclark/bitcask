@@ -54,7 +54,7 @@ type recordLoc struct {
 // concurrent use.
 type DB struct {
 	cfg         Config
-	dir         string
+	dir         *os.File
 	emit        func(any)
 	fw          *os.File               // Active segment opened for writing.
 	fwID        segmentID              // Active segment ID.
@@ -75,6 +75,7 @@ type DB struct {
 // Subsequent calls to Open by this or any other process before calling
 // [DB.Close] will result in an [ErrDatabaseLocked] error as only one [DB]
 // instance may run against the directory given by path at any moment.
+// TODO: Call os.Sync on DB directory parent dir?
 func Open(path string, config Config) (*DB, error) {
 	config = config.hydrated()
 	if err := config.validate(); err != nil {
@@ -83,14 +84,19 @@ func Open(path string, config Config) (*DB, error) {
 
 	// Create the directory if it doesn't exist.
 	if err := os.MkdirAll(path, dbDirMode); err != nil {
-		return nil, fmt.Errorf("creating directory: %v", err)
+		return nil, fmt.Errorf("creating database directory: %v", err)
 	}
 
-	if err := acquireDirLock(path); err != nil {
+	dir, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening database directory: %v", err)
+	}
+
+	if err := acquireDirLock(dir); err != nil {
 		return nil, err
 	}
 
-	db, err := open(path, config)
+	db, err := open(dir, config)
 	if err != nil {
 		_ = releaseDirLock(path)
 		return nil, err
@@ -99,9 +105,9 @@ func Open(path string, config Config) (*DB, error) {
 	return db, nil
 }
 
-func open(path string, config Config) (*DB, error) {
+func open(dir *os.File, config Config) (*DB, error) {
 	// List all segment filenames.
-	fns, err := filepath.Glob(filepath.Join(path, "*"+segFileExt))
+	fns, err := filepath.Glob(filepath.Join(dir.Name(), "*"+segFileExt))
 	if err != nil {
 		return nil, fmt.Errorf("finding segment files in directory: %v", err)
 	}
@@ -133,11 +139,7 @@ func open(path string, config Config) (*DB, error) {
 	}
 
 	fwID := sids[len(sids)-1]
-	fw, err := os.OpenFile(
-		filepath.Join(path, fwID.Filename()),
-		segFileFlag,
-		segFileMode,
-	)
+	fw, err := createFile(dir, fwID.Filename(), segFileFlag, segFileMode)
 	if err != nil {
 		return nil, fmt.Errorf("opening active segment file for writing: %v", err)
 	}
@@ -147,7 +149,7 @@ func open(path string, config Config) (*DB, error) {
 	index := make(map[string]recordLoc)
 
 	for _, sid := range sids {
-		fr, err := os.Open(filepath.Join(path, sid.Filename()))
+		fr, err := os.Open(filepath.Join(dir.Name(), sid.Filename()))
 		if err != nil {
 			_ = fw.Close() // ignore error, nothing was written to it
 			return nil, fmt.Errorf("opening segment file for reading: %v", err)
@@ -216,7 +218,7 @@ func open(path string, config Config) (*DB, error) {
 
 	db := &DB{
 		cfg:        config,
-		dir:        path,
+		dir:        dir,
 		emit:       config.HandleEvent,
 		fw:         fw,
 		fwID:       fwID,
@@ -428,8 +430,12 @@ func (db *DB) Close() error {
 		_ = fr.Close() // ignore error, read-only file
 	}
 
-	if err := releaseDirLock(db.dir); err != nil {
+	if err := releaseDirLock(db.dir.Name()); err != nil {
 		return fmt.Errorf("releasing directory lock: %v", err)
+	}
+
+	if err := db.dir.Close(); err != nil {
+		return fmt.Errorf("closing the database directory: %v", err)
 	}
 
 	return nil

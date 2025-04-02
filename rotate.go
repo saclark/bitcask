@@ -3,7 +3,6 @@ package bitcask
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 // RotateSegment causes the database to begin writing to a new active segment,
@@ -25,10 +24,9 @@ func (db *DB) RotateSegment() error {
 // Callers must take care to Lock() before calling this method.
 func (db *DB) rotateSegment() (err error) {
 	sid := db.nextUncompactedSegmentID()
-	fpath := filepath.Join(db.dir, sid.Filename())
 
 	var fw, fr *os.File
-	fw, err = os.OpenFile(fpath, segFileFlag, segFileMode)
+	fw, err = createFile(db.dir, sid.Filename(), segFileFlag, segFileMode)
 	if err != nil {
 		return fmt.Errorf("opening new active segment file for writing: %v", err)
 	}
@@ -40,11 +38,11 @@ func (db *DB) rotateSegment() (err error) {
 			if fr != nil {
 				_ = fr.Close() // ignore error, read-only file
 			}
-			_ = os.Remove(fpath) // ignore error
+			_ = os.Remove(fw.Name()) // ignore error
 		}
 	}()
 
-	fr, err = os.Open(fpath)
+	fr, err = os.Open(fw.Name())
 	if err != nil {
 		return fmt.Errorf("opening new active segment file for reading: %v", err)
 	}

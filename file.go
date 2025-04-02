@@ -1,6 +1,7 @@
 package bitcask
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -19,14 +20,15 @@ const (
 	minUncompactedSegmentID = segmentID(0x8000000)
 )
 
-func acquireDirLock(dirPath string) error {
-	lockPath := filepath.Join(dirPath, lockFilename)
-	if _, err := os.OpenFile(lockPath, lockFileFlag, lockFileMode); err != nil {
-		if os.IsExist(err) {
+func acquireDirLock(dir *os.File) error {
+	f, err := createFile(dir, lockFilename, lockFileFlag, lockFileMode)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
 			return ErrDatabaseLocked
 		}
 		return err
 	}
+	defer f.Close()
 	return nil
 }
 
@@ -36,6 +38,21 @@ func releaseDirLock(dirPath string) error {
 		return fmt.Errorf("removing %s file: %v", lockFilename, err)
 	}
 	return nil
+}
+
+// createFile creates the named file directly under dir and then calls [os.Sync]
+// on dir to ensure durability.
+// TODO: Consider pre-allocating file space with fallocate() for perf optimization?
+func createFile(dir *os.File, name string, flag int, perm fs.FileMode) (*os.File, error) {
+	f, err := os.OpenFile(filepath.Join(dir.Name(), name), flag, perm)
+	if err != nil {
+		return nil, fmt.Errorf("opening new file: %w", err)
+	}
+	// TODO: Use the fdatasync syscall instead.
+	if err := dir.Sync(); err != nil {
+		return nil, fmt.Errorf("syncing parent directory: %w", err)
+	}
+	return f, nil
 }
 
 func syncAndClose(f *os.File) error {
