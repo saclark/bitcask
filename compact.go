@@ -73,7 +73,7 @@ func (db *DB) CompactLog() (bool, error) {
 	for _, srcSID := range sids {
 		src, err := os.Open(filepath.Join(db.dir.Name(), srcSID.Filename()))
 		if err != nil {
-			if err := syncAndClose(dst); err != nil {
+			if err := dataSyncAndClose(dst); err != nil {
 				return true, db.compactionFailed(fmt.Errorf(
 					"syncing and closing compacted segment file opened for writing: %v",
 					err,
@@ -94,7 +94,7 @@ func (db *DB) CompactLog() (bool, error) {
 				}
 
 				_ = src.Close() // ignore error, read-only file
-				if err := syncAndClose(dst); err != nil {
+				if err := dataSyncAndClose(dst); err != nil {
 					return true, db.compactionFailed(fmt.Errorf(
 						"syncing and closing compacted segment file opened for writing: %v",
 						err,
@@ -138,7 +138,7 @@ func (db *DB) CompactLog() (bool, error) {
 					firstNewCompactedSID = dstSID
 				}
 
-				if err := syncAndClose(dst); err != nil {
+				if err := dataSyncAndClose(dst); err != nil {
 					_ = src.Close() // ignore error, read-only file
 					return true, db.compactionFailed(fmt.Errorf(
 						"syncing and closing compacted segment file opened for writing: %v",
@@ -179,7 +179,7 @@ func (db *DB) CompactLog() (bool, error) {
 			nWritten, err := encoder.Encode(rec)
 			if err != nil {
 				_ = src.Close() // ignore error, read-only file
-				if err := syncAndClose(dst); err != nil {
+				if err := dataSyncAndClose(dst); err != nil {
 					return true, db.compactionFailed(fmt.Errorf(
 						"syncing and closing compacted segment file opened for writing: %v",
 						err,
@@ -230,7 +230,7 @@ func (db *DB) CompactLog() (bool, error) {
 		_ = src.Close() // ignore error, read-only file
 	}
 
-	if err := syncAndClose(dst); err != nil {
+	if err := dataSyncAndClose(dst); err != nil {
 		return true, db.compactionFailed(fmt.Errorf(
 			"syncing and closing compacted segment file opened for writing: %v",
 			err,

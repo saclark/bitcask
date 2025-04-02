@@ -386,16 +386,21 @@ func (db *DB) EachKey(f func(key string) bool) error {
 	return nil
 }
 
-// Sync commits the current contents of the active segment to stable storage.
+// DataSync commits the current contents of the active segment to stable storage.
 // Typically, this means flushing the file system's in-memory copy of recently
 // written data to disk.
-func (db *DB) Sync() error {
+//
+// This translates to an fdatasync() syscall on platforms that support it and
+// falls back to [os.Sync] on platforms that do not. The fdatasync() syscall
+// does not flush modified metadata unless that metadata is needed in order to
+// allow a subsequent data retrieval to be correctly handled.
+func (db *DB) DataSync() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	if db.closed != nil {
 		return db.closed
 	}
-	return db.fw.Sync()
+	return Fdatasync(db.fw)
 }
 
 // Close closes the database. It syncs the active segment, closes all open file
@@ -422,7 +427,7 @@ func (db *DB) Close() error {
 	db.closed = ErrDatabaseClosed
 	db.writeClosed = ErrDatabaseClosed
 
-	if err := syncAndClose(db.fw); err != nil {
+	if err := dataSyncAndClose(db.fw); err != nil {
 		return fmt.Errorf("syncing and closing active segment file opened for writing: %w", err)
 	}
 

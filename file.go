@@ -48,17 +48,18 @@ func createFile(dir *os.File, name string, flag int, perm fs.FileMode) (*os.File
 	if err != nil {
 		return nil, fmt.Errorf("opening new file: %w", err)
 	}
+	// fsync(), not fdatasync(), b/c metadata IS what we want to persist here.
 	if err := dir.Sync(); err != nil {
 		return nil, fmt.Errorf("syncing parent directory: %w", err)
 	}
 	return f, nil
 }
 
-func syncAndClose(f *os.File) error {
+func dataSyncAndClose(f *os.File) error {
 	if f == nil {
 		return nil
 	}
-	if err := f.Sync(); err != nil {
+	if err := Fdatasync(f); err != nil {
 		_ = f.Close() // try to close, ignore error
 		return fmt.Errorf("syncing %s: %v", f.Name(), err)
 	}

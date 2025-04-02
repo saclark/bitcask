@@ -582,7 +582,7 @@ func TestClose_DBMethodsReturnErrDatabaseClosed(t *testing.T) {
 	if _, err := db.CompactLog(); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("CompactLog: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
-	if err := db.Sync(); !errors.Is(err, ErrDatabaseClosed) {
+	if err := db.DataSync(); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("Sync: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
 	if err := db.Close(); !errors.Is(err, ErrDatabaseClosed) {
@@ -745,7 +745,7 @@ func BenchmarkPutSync(b *testing.B) {
 				if err := db.Put(key, value); err != nil {
 					b.Fatal(err)
 				}
-				if err = db.Sync(); err != nil {
+				if err = db.DataSync(); err != nil {
 					b.Fatal(err)
 				}
 			}

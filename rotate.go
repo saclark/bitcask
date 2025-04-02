@@ -47,7 +47,7 @@ func (db *DB) rotateSegment() (err error) {
 		return fmt.Errorf("opening new active segment file for reading: %v", err)
 	}
 
-	if err := syncAndClose(db.fw); err != nil {
+	if err := dataSyncAndClose(db.fw); err != nil {
 		return fmt.Errorf("syncing and closing active segment file opened for writing: %v", err)
 	}
 
