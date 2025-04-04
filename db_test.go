@@ -209,9 +209,16 @@ func TestDB_SingleThreaded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading directory: %v", err)
 		}
-
 		if want := 3; len(segs) != want {
-			t.Fatalf("want %d files, got %d", want, len(segs))
+			t.Fatalf("want %d segment files, got %d", want, len(segs))
+		}
+
+		idxs, err := filepath.Glob(filepath.Join(path, "*.idx"))
+		if err != nil {
+			t.Fatalf("reading directory: %v", err)
+		}
+		if want := 2; len(idxs) != want {
+			t.Fatalf("want %d index files, got %d", want, len(idxs))
 		}
 
 		for _, seg := range segs {

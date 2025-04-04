@@ -11,11 +11,14 @@ import (
 const (
 	lockFilename            = "~.lock"
 	segFileExt              = ".seg"
+	idxFileExt              = ".idx"
 	lockFileFlag            = os.O_CREATE | os.O_EXCL
 	segFileFlag             = os.O_CREATE | os.O_APPEND | os.O_WRONLY
+	idxFileFlag             = os.O_CREATE | os.O_APPEND | os.O_WRONLY
 	dbDirMode               = fs.FileMode(0o755) // rwxr-xr-x
 	lockFileMode            = fs.FileMode(0o644) // rw-r--r--
 	segFileMode             = fs.FileMode(0o644) // rw-r--r--
+	idxFileMode             = fs.FileMode(0o644) // rw-r--r--
 	minCompactedSegmentID   = segmentID(0x00)
 	minUncompactedSegmentID = segmentID(0x8000000)
 )
@@ -32,28 +35,51 @@ func acquireDirLock(dir *os.File) error {
 	return nil
 }
 
-func releaseDirLock(dirPath string) error {
-	err := os.Remove(filepath.Join(dirPath, lockFilename))
+func releaseDirLock(dir *os.File) error {
+	err := removeFile(dir, filepath.Join(dir.Name(), lockFilename))
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing %s file: %v", lockFilename, err)
+		return err
 	}
 	return nil
 }
 
 // createFile creates the named file directly under dir and then calls [os.Sync]
 // on dir to ensure durability.
-// TODO: Consider pre-allocating file space with fallocate() for perf optimization?
+//
+// TODO: Consider pre-allocating file space with fallocate() for perf
+// optimization?
+// TODO: Distinguish open error from sync error.
 func createFile(dir *os.File, name string, flag int, perm fs.FileMode) (*os.File, error) {
 	f, err := os.OpenFile(filepath.Join(dir.Name(), name), flag, perm)
 	if err != nil {
 		return nil, fmt.Errorf("opening new file: %w", err)
 	}
 	if err := dir.Sync(); err != nil {
-		return nil, fmt.Errorf("syncing parent directory: %w", err)
+		return nil, fmt.Errorf("syncing parent directory %s: %w", dir.Name(), err)
 	}
 	return f, nil
 }
 
+// removeFile removes the named file and then calls [os.Sync] on parentDir.
+//
+// TODO: Distinguish remove error from sync error.
+func removeFile(parentDir *os.File, name string) error {
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("removing %s: %w", name, err)
+	}
+	if err := parentDir.Sync(); err != nil {
+		return fmt.Errorf(
+			"syncing parent directory %s: %w",
+			parentDir.Name(),
+			err,
+		)
+	}
+	return nil
+}
+
+// syncAndClose calls [os.Sync] and [os.Close] on f if not nil.
+//
+// TODO: Distinguish sync error from close error.
 func syncAndClose(f *os.File) error {
 	if f == nil {
 		return nil
@@ -103,6 +129,16 @@ func (id segmentID) Inc() segmentID {
 // should match the numerical ordering of their corresponding segmentIDs.
 func (id segmentID) Filename() string {
 	return fmt.Sprintf("%020d", id) + segFileExt
+}
+
+// IndexFilename returns the filename of the segement index file corresponding
+// to the segmentID.
+//
+// It is formatted such that the lexicographical ordering of segment index
+// filenames should match the numerical ordering of their corresponding
+// segmentIDs.
+func (id segmentID) IndexFilename() string {
+	return fmt.Sprintf("%020d", id) + idxFileExt
 }
 
 // nextCompactedSegmentID returns the next ID to use in the series of

@@ -98,7 +98,7 @@ func Open(path string, config Config) (*DB, error) {
 
 	db, err := open(dir, config)
 	if err != nil {
-		_ = releaseDirLock(path)
+		_ = releaseDirLock(dir)
 		return nil, err
 	}
 
@@ -107,7 +107,7 @@ func Open(path string, config Config) (*DB, error) {
 
 func open(dir *os.File, config Config) (*DB, error) {
 	// List all segment filenames.
-	fns, err := filepath.Glob(filepath.Join(dir.Name(), "*"+segFileExt))
+	segNames, err := filepath.Glob(filepath.Join(dir.Name(), "*"+segFileExt))
 	if err != nil {
 		return nil, fmt.Errorf("finding segment files in directory: %v", err)
 	}
@@ -115,17 +115,38 @@ func open(dir *os.File, config Config) (*DB, error) {
 	// Parse the filenames as segmentIDs and sort them. The active segment has
 	// the largest ID.
 	var sids []segmentID
-	for _, fn := range fns {
-		fn = filepath.Base(fn)
-		ext := filepath.Ext(fn)
+	for _, fname := range segNames {
+		fname = filepath.Base(fname)
+		ext := filepath.Ext(fname)
 		if ext != segFileExt {
 			continue
 		}
-		id, err := strconv.ParseUint(strings.TrimSuffix(fn, ext), 10, 64)
+		id, err := strconv.ParseUint(strings.TrimSuffix(fname, ext), 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("invalid segment filename: %s", fn)
+			return nil, fmt.Errorf("invalid segment filename: %s", fname)
 		}
 		sids = append(sids, segmentID(id))
+	}
+
+	// List all index filenames.
+	idxNames, err := filepath.Glob(filepath.Join(dir.Name(), "*"+idxFileExt))
+	if err != nil {
+		return nil, fmt.Errorf("finding index files in directory: %v", err)
+	}
+
+	// Construct the set of segments having index files.
+	indexedSegments := make(map[segmentID]struct{}, len(sids))
+	for _, fname := range idxNames {
+		fname = filepath.Base(fname)
+		ext := filepath.Ext(fname)
+		if ext != idxFileExt {
+			continue
+		}
+		id, err := strconv.ParseUint(strings.TrimSuffix(fname, ext), 10, 64)
+		if err != nil {
+			continue
+		}
+		indexedSegments[segmentID(id)] = struct{}{}
 	}
 
 	slices.Sort(sids)
@@ -156,45 +177,92 @@ func open(dir *os.File, config Config) (*DB, error) {
 		frs[sid] = fr
 
 		// Index the segment.
-		dec := newWALRecordDecoder(fr)
-		var offset int64
-		for {
-			var rec walRecord
-			n, err := dec.Decode(&rec)
+		if _, ok := indexedSegments[sid]; ok {
+			idx, err := os.Open(filepath.Join(dir.Name(), sid.IndexFilename()))
 			if err != nil {
-				if errors.Is(err, io.EOF) {
-					break
-				}
-
 				_ = fw.Close() // ignore error, nothing was written to it
-				for _, fr := range frs {
-					_ = fr.Close() // ignore error, read-only file
-				}
-
-				// Either there was a partial write or the segment file was
-				// corrupted.
-				return nil, fmt.Errorf(
-					"decoding record starting at byte %d in segment file %s: %w",
-					offset,
-					fr.Name(),
-					err,
-				)
+				return nil, fmt.Errorf("opening index file for reading: %v", err)
 			}
 
-			k := string(rec.Key)
+			dec := newIndexRecordDecoder(idx)
+			var offset int64
+			for {
+				var rec indexRecord
+				n, err := dec.Decode(&rec)
+				if err != nil {
+					if errors.Is(err, io.EOF) {
+						break
+					}
 
-			ttl, _ := rec.TTL()
-			if len(rec.Value) == 0 || ttl <= 0 {
-				delete(index, k)
-			} else {
-				index[k] = recordLoc{
-					SegmentID: sid,
-					Offset:    offset,
-					Size:      rec.Size(),
+					_ = fw.Close()  // ignore error, nothing was written to it
+					_ = idx.Close() // ignore error, read-only file
+					for _, fr := range frs {
+						_ = fr.Close() // ignore error, read-only file
+					}
+
+					// Either there was a partial write or the segment file was
+					// corrupted.
+					return nil, fmt.Errorf(
+						"decoding index record starting at byte %d in index file %s: %w",
+						offset,
+						idx.Name(),
+						err,
+					)
 				}
+
+				if ttl, _ := rec.RecordTTL(); ttl <= 0 {
+					delete(index, string(rec.Key))
+				} else {
+					index[string(rec.Key)] = recordLoc{
+						SegmentID: sid,
+						Offset:    rec.RecordOffset(),
+						Size:      rec.RecordSize(),
+					}
+				}
+
+				offset += n
 			}
 
-			offset += n
+			_ = idx.Close() // ignore error, read-only file
+		} else {
+			dec := newWALRecordDecoder(fr)
+			var offset int64
+			for {
+				var rec walRecord
+				n, err := dec.Decode(&rec)
+				if err != nil {
+					if errors.Is(err, io.EOF) {
+						break
+					}
+
+					_ = fw.Close() // ignore error, nothing was written to it
+					for _, fr := range frs {
+						_ = fr.Close() // ignore error, read-only file
+					}
+
+					// Either there was a partial write or the segment file was
+					// corrupted.
+					return nil, fmt.Errorf(
+						"decoding record starting at byte %d in segment file %s: %w",
+						offset,
+						fr.Name(),
+						err,
+					)
+				}
+
+				ttl, _ := rec.TTL()
+				if len(rec.Value) == 0 || ttl <= 0 {
+					delete(index, string(rec.Key))
+				} else {
+					index[string(rec.Key)] = recordLoc{
+						SegmentID: sid,
+						Offset:    offset,
+						Size:      rec.Size(),
+					}
+				}
+
+				offset += n
+			}
 		}
 	}
 
@@ -412,7 +480,7 @@ func (db *DB) Close() error {
 		_ = fr.Close() // ignore error, read-only file
 	}
 
-	if err := releaseDirLock(db.dir.Name()); err != nil {
+	if err := releaseDirLock(db.dir); err != nil {
 		return fmt.Errorf("releasing directory lock: %v", err)
 	}
 

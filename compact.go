@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 )
 
 // LogCompactionError signifies that log compaction encountered an error. While
@@ -34,23 +35,30 @@ func (e *LogCompactionError) Unwrap() error {
 // runs automatically in the background when the active segment reaches the
 // maximum size given by [Config.MaxSegmentSize]. However, this method allows
 // callers to manually trigger a log compaction at will.
+//
+// TODO: The error handling here is a mess. Clean it up.
+// TODO: Operate on segment and index files in parallel, where possible.
 func (db *DB) CompactLog() (bool, error) {
 	select {
 	case _, ok := <-db.compacting:
 		if !ok {
+			// Database is closed.
 			db.mu.RLock()
 			defer db.mu.RUnlock()
 			return false, db.closed
 		}
 
+		// Prevent simultaneous compactions.
 		db.emit("log compaction: started")
 		defer func() {
 			db.compacting <- struct{}{}
 		}()
 	default:
+		// Compaction is already underway.
 		return false, nil
 	}
 
+	// Identify inactive segments to compact.
 	db.mu.RLock()
 	activeSIDAsOfStart := db.fwID
 	var sids []segmentID
@@ -64,28 +72,37 @@ func (db *DB) CompactLog() (bool, error) {
 	slices.Sort(sids)
 
 	var dst *os.File
+	var idx *os.File
 	var dstSID segmentID
 	var dstOffset int64
-	var encoder *walRecordEncoder
+	var walEncoder *walRecordEncoder
+	var idxEncoder *indexRecordEncoder
 	var firstNewCompactedSID segmentID
 	for _, srcSID := range sids {
 		src, err := os.Open(filepath.Join(db.dir.Name(), srcSID.Filename()))
 		if err != nil {
 			if err := syncAndClose(dst); err != nil {
+				_ = syncAndClose(idx) // ignore error
 				return true, db.compactionFailed(fmt.Errorf(
 					"syncing and closing compacted segment file opened for writing: %v",
+					err,
+				))
+			}
+			if err := syncAndClose(idx); err != nil {
+				return true, db.compactionFailed(fmt.Errorf(
+					"syncing and closing index file opened for writing: %v",
 					err,
 				))
 			}
 			return true, db.compactionFailed(fmt.Errorf("opening segment file for reading: %v", err))
 		}
 
-		decoder := newWALRecordDecoder(src)
+		walDecoder := newWALRecordDecoder(src)
 		var srcOffset int64
 		for {
 			// Decode the record.
 			var rec walRecord
-			nRead, err := decoder.Decode(&rec)
+			nRead, err := walDecoder.Decode(&rec)
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					break
@@ -93,8 +110,15 @@ func (db *DB) CompactLog() (bool, error) {
 
 				_ = src.Close() // ignore error, read-only file
 				if err := syncAndClose(dst); err != nil {
+					_ = syncAndClose(idx) // ignore error
 					return true, db.compactionFailed(fmt.Errorf(
 						"syncing and closing compacted segment file opened for writing: %v",
+						err,
+					))
+				}
+				if err := syncAndClose(idx); err != nil {
+					return true, db.compactionFailed(fmt.Errorf(
+						"syncing and closing index file opened for writing: %v",
 						err,
 					))
 				}
@@ -127,7 +151,7 @@ func (db *DB) CompactLog() (bool, error) {
 			db.mu.RUnlock()
 
 			// Create a new segment if necessary.
-			if dst == nil || encoder == nil || dstOffset+rec.Size() > db.cfg.MaxSegmentSize {
+			if dst == nil || dstOffset+rec.Size() > db.cfg.MaxSegmentSize {
 				db.mu.RLock()
 				dstSID = db.nextCompactedSegmentID()
 				db.mu.RUnlock()
@@ -137,9 +161,17 @@ func (db *DB) CompactLog() (bool, error) {
 				}
 
 				if err := syncAndClose(dst); err != nil {
-					_ = src.Close() // ignore error, read-only file
+					_ = src.Close()       // ignore error, read-only file
+					_ = syncAndClose(idx) // ignore error
 					return true, db.compactionFailed(fmt.Errorf(
 						"syncing and closing compacted segment file opened for writing: %v",
+						err,
+					))
+				}
+				if err := syncAndClose(idx); err != nil {
+					_ = src.Close() // ignore error, read-only file
+					return true, db.compactionFailed(fmt.Errorf(
+						"syncing and closing index file opened for writing: %v",
 						err,
 					))
 				}
@@ -153,13 +185,24 @@ func (db *DB) CompactLog() (bool, error) {
 						err,
 					))
 				}
+				idx, err = createFile(db.dir, dstSID.IndexFilename(), idxFileFlag, idxFileMode)
+				if err != nil {
+					_ = src.Close() // ignore error, read-only file
+					_ = dst.Close() // ignore error, nothing was written to it
+					return true, db.compactionFailed(fmt.Errorf(
+						"opening new index file for writing: %v",
+						err,
+					))
+				}
 
-				encoder = newWALRecordEncoder(dst)
+				walEncoder = newWALRecordEncoder(dst)
+				idxEncoder = newIndexRecordEncoder(idx)
 
 				dstROnly, err := os.Open(filepath.Join(db.dir.Name(), dstSID.Filename()))
 				if err != nil {
 					_ = src.Close() // ignore error, read-only file
 					_ = dst.Close() // ignore error, nothing was written to it
+					_ = idx.Close() // ignore error, nothing was written to it
 					return true, db.compactionFailed(fmt.Errorf(
 						"opening new compacted segment file for reading: %v",
 						err,
@@ -174,12 +217,19 @@ func (db *DB) CompactLog() (bool, error) {
 			}
 
 			// Encode the record.
-			nWritten, err := encoder.Encode(rec)
+			nWritten, err := walEncoder.Encode(rec)
 			if err != nil {
 				_ = src.Close() // ignore error, read-only file
 				if err := syncAndClose(dst); err != nil {
+					_ = syncAndClose(idx) // ignore error
 					return true, db.compactionFailed(fmt.Errorf(
 						"syncing and closing compacted segment file opened for writing: %v",
+						err,
+					))
+				}
+				if err := syncAndClose(idx); err != nil {
+					return true, db.compactionFailed(fmt.Errorf(
+						"syncing and closing index file opened for writing: %v",
 						err,
 					))
 				}
@@ -209,6 +259,40 @@ func (db *DB) CompactLog() (bool, error) {
 				))
 			}
 
+			// Encode the index record.
+			if idx != nil {
+				if _, err = idxEncoder.Encode(indexRecord{
+					expiry: rec.Expiry,
+					// TODO: Assert the below casts are safe.
+					offset: uint64(dstOffset),  // safe cast, always positive
+					size:   uint64(rec.Size()), // safe cast, always positive
+					Key:    rec.Key,
+				}); err != nil {
+					// Abort creating an index file for this segment.
+					if err = removeFile(db.dir, idx.Name()); err != nil {
+						_ = src.Close() // ignore error, read-only file
+						if err := syncAndClose(dst); err != nil {
+							_ = syncAndClose(idx) // ignore error
+							return true, db.compactionFailed(fmt.Errorf(
+								"syncing and closing compacted segment file opened for writing: %v",
+								err,
+							))
+						}
+						if err := syncAndClose(idx); err != nil {
+							return true, db.compactionFailed(fmt.Errorf(
+								"syncing and closing index file opened for writing: %v",
+								err,
+							))
+						}
+						return true, db.compactionFailed(fmt.Errorf(
+							"removing index file: %w",
+							err,
+						))
+					}
+					idx = nil
+				}
+			}
+
 			// Update the index so long as it hasn't changed since we last looked it up.
 			db.mu.Lock()
 			v, ok := db.index[key]
@@ -229,8 +313,15 @@ func (db *DB) CompactLog() (bool, error) {
 	}
 
 	if err := syncAndClose(dst); err != nil {
+		_ = syncAndClose(idx) // ignore error
 		return true, db.compactionFailed(fmt.Errorf(
 			"syncing and closing compacted segment file opened for writing: %v",
+			err,
+		))
+	}
+	if err := syncAndClose(idx); err != nil {
+		return true, db.compactionFailed(fmt.Errorf(
+			"syncing and closing index file opened for writing: %v",
 			err,
 		))
 	}
@@ -239,11 +330,20 @@ func (db *DB) CompactLog() (bool, error) {
 	for sid, fr := range db.frs {
 		if sid < firstNewCompactedSID || (!sid.Compacted() && sid < activeSIDAsOfStart) {
 			delete(db.frs, sid)
-			_ = fr.Close()           // ignore error, read-only file
-			_ = os.Remove(fr.Name()) // ignore error
+			_ = fr.Close()                                                        // ignore error, read-only file
+			_ = os.Remove(fr.Name())                                              // ignore error
+			_ = os.Remove(strings.TrimSuffix(fr.Name(), segFileExt) + idxFileExt) // ignore error
 		}
 	}
 	db.mu.Unlock()
+
+	if err := db.dir.Sync(); err != nil {
+		return true, fmt.Errorf(
+			"syncing parent directory %s: %w",
+			db.dir.Name(),
+			err,
+		)
+	}
 
 	db.emit("log compaction: succeeded")
 	return true, nil
