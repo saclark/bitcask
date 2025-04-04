@@ -6,16 +6,21 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 const (
 	lockFilename            = "~.lock"
 	segFileExt              = ".seg"
+	idxFileExt              = ".index"
 	lockFileFlag            = os.O_CREATE | os.O_EXCL
 	segFileFlag             = os.O_CREATE | os.O_APPEND | os.O_WRONLY
+	idxFileFlag             = os.O_CREATE | os.O_APPEND | os.O_WRONLY
 	dbDirMode               = fs.FileMode(0755) // rwxr-xr-x
 	lockFileMode            = fs.FileMode(0644) // rw-r--r--
 	segFileMode             = fs.FileMode(0644) // rw-r--r--
+	idxFileMode             = fs.FileMode(0644) // rw-r--r--
 	minCompactedSegmentID   = segmentID(0x00)
 	minUncompactedSegmentID = segmentID(0x8000000)
 )
@@ -82,6 +87,19 @@ func syncAndClose(f *os.File) error {
 // segments with higher segmentIDs.
 type segmentID uint64
 
+func parseSegmentID(filename string) (segmentID, error) {
+	basename := filepath.Base(filename)
+	ext := filepath.Ext(basename)
+	if ext != segFileExt && ext != idxFileExt {
+		return 0, fmt.Errorf("invalid segment or segment index basename: %s", basename)
+	}
+	id, err := strconv.ParseUint(strings.TrimSuffix(basename, ext), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid segment or segment index basename: %s", basename)
+	}
+	return segmentID(id), nil
+}
+
 // Compacted returns whether the segmentID represents a compacted segment.
 func (id segmentID) Compacted() bool {
 	return id < minUncompactedSegmentID
@@ -103,6 +121,16 @@ func (id segmentID) Inc() segmentID {
 // should match the numerical ordering of their corresponding segmentIDs.
 func (id segmentID) Filename() string {
 	return fmt.Sprintf("%020d", id) + segFileExt
+}
+
+// IndexFilename returns the filename of the segement index file corresponding
+// to the segmentID.
+//
+// It is formatted such that the lexicographical ordering of segment index
+// filenames should match the numerical ordering of their corresponding
+// segmentIDs.
+func (id segmentID) IndexFilename() string {
+	return fmt.Sprintf("%020d", id) + idxFileExt
 }
 
 // nextCompactedSegmentID returns the next ID to use in the series of
