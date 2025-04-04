@@ -179,7 +179,7 @@ func (e *walRecordEncoder) Encode(rec walRecord) (n int64, err error) {
 		return n, fmt.Errorf("writing value: %w", err)
 	}
 
-	if err := e.bw.Flush(); err != nil {
+	if err = e.bw.Flush(); err != nil {
 		return n, fmt.Errorf("flushing buffered writer: %w", err)
 	}
 
