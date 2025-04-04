@@ -48,7 +48,6 @@ func createFile(dir *os.File, name string, flag int, perm fs.FileMode) (*os.File
 	if err != nil {
 		return nil, fmt.Errorf("opening new file: %w", err)
 	}
-	// TODO: Use the fdatasync syscall instead.
 	if err := dir.Sync(); err != nil {
 		return nil, fmt.Errorf("syncing parent directory: %w", err)
 	}
