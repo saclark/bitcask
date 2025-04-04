@@ -121,7 +121,7 @@ func open(dir *os.File, config Config) (*DB, error) {
 		if ext != segFileExt {
 			continue
 		}
-		id, err := strconv.ParseInt(strings.TrimSuffix(fn, ext), 10, 64)
+		id, err := strconv.ParseUint(strings.TrimSuffix(fn, ext), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid segment filename: %s", fn)
 		}
