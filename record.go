@@ -99,7 +99,7 @@ type walRecord struct {
 	Expiry expiryTimestamp
 }
 
-// newWALRecord constructs a new [walRecord] value without an expiry.
+// newWALRecord constructs a new [walRecord].
 func newWALRecord(key []byte, value []byte, expiry expiryTimestamp) walRecord {
 	return walRecord{
 		Key:    key,
