@@ -13,9 +13,9 @@ const (
 	segFileExt              = ".seg"
 	lockFileFlag            = os.O_CREATE | os.O_EXCL
 	segFileFlag             = os.O_CREATE | os.O_APPEND | os.O_WRONLY
-	dbDirMode               = fs.FileMode(0755) // rwxr-xr-x
-	lockFileMode            = fs.FileMode(0644) // rw-r--r--
-	segFileMode             = fs.FileMode(0644) // rw-r--r--
+	dbDirMode               = fs.FileMode(0o755) // rwxr-xr-x
+	lockFileMode            = fs.FileMode(0o644) // rw-r--r--
+	segFileMode             = fs.FileMode(0o644) // rw-r--r--
 	minCompactedSegmentID   = segmentID(0x00)
 	minUncompactedSegmentID = segmentID(0x8000000)
 )
