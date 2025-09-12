@@ -370,22 +370,6 @@ func (db *DB) put(key string, value []byte, expiry expiryTimestamp) error {
 	return nil
 }
 
-// Keys iterates over all keys, passing each key to f and terminating when f
-// returns false or all keys have been enumerated.
-func (db *DB) EachKey(f func(key string) bool) error {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-	if db.closed != nil {
-		return db.closed
-	}
-	for k := range db.index {
-		if !f(k) {
-			return nil
-		}
-	}
-	return nil
-}
-
 // Sync commits the current contents of the active segment to stable storage.
 // Typically, this means flushing the file system's in-memory copy of recently
 // written data to disk.

@@ -573,9 +573,6 @@ func TestClose_DBMethodsReturnErrDatabaseClosed(t *testing.T) {
 	if err := db.Delete("foo"); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("Delete: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
-	if err := db.EachKey(func(key string) bool { return false }); !errors.Is(err, ErrDatabaseClosed) {
-		t.Errorf("EachKey: want '%v', got '%v'", ErrDatabaseClosed, err)
-	}
 	if err := db.RotateSegment(); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("RotateSegment: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
