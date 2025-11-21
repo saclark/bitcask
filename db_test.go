@@ -379,7 +379,7 @@ func TestDelete_NonexistentKey_DoesNotWriteTombstone(t *testing.T) {
 	defer os.RemoveAll(path)
 	defer db.Close()
 
-	for i := 0; i < 255; i++ {
+	for i := range 255 {
 		if err := db.Delete(string([]rune{rune(i)})); err != nil {
 			t.Fatalf("error deleting non-existent key: %v", err)
 		}
@@ -514,7 +514,7 @@ func TestClose_WhileDeleting(t *testing.T) {
 	defer os.RemoveAll(path)
 
 	v := []byte("v")
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		if err := db.Put(strconv.Itoa(i), v); err != nil {
 			t.Fatalf("Put(): %v", err)
 		}
@@ -523,7 +523,7 @@ func TestClose_WhileDeleting(t *testing.T) {
 	c := make(chan error)
 	go func() {
 		c <- nil
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			if err := db.Delete(strconv.Itoa(i)); err != nil {
 				c <- err
 				return
@@ -655,7 +655,7 @@ func BenchmarkGet(b *testing.B) {
 			}
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				val, err := db.Get(key)
 				if err != nil {
 					b.Fatal(err)
@@ -708,7 +708,7 @@ func BenchmarkPut(b *testing.B) {
 			value := []byte(strings.Repeat(" ", tc.size))
 			b.ResetTimer()
 
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				if err := db.Put(key, value); err != nil {
 					b.Fatal(err)
 				}
@@ -757,7 +757,7 @@ func BenchmarkPutSync(b *testing.B) {
 			value := []byte(strings.Repeat(" ", tc.size))
 			b.ResetTimer()
 
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				if err := db.Put(key, value); err != nil {
 					b.Fatal(err)
 				}

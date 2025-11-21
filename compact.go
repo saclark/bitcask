@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 )
 
 // LogCompactionError signifies that log compaction encountered an error. While
@@ -61,9 +61,7 @@ func (db *DB) CompactLog() (bool, error) {
 	}
 	db.mu.RUnlock()
 
-	sort.Slice(sids, func(i, j int) bool {
-		return sids[i] < sids[j]
-	})
+	slices.Sort(sids)
 
 	var dst *os.File
 	var dstSID segmentID

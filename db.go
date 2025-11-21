@@ -11,7 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -128,9 +128,7 @@ func open(dir *os.File, config Config) (*DB, error) {
 		sids = append(sids, segmentID(id))
 	}
 
-	sort.Slice(sids, func(i, j int) bool {
-		return sids[i] < sids[j]
-	})
+	slices.Sort(sids)
 
 	// Open the active segment file for writing, creating a new one if none
 	// exist.
