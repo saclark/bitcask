@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -122,113 +123,131 @@ func TestOpen_FailsAfterLockingDB_UnlocksDB(t *testing.T) {
 }
 
 func TestDB_SingleThreaded(t *testing.T) {
-	config := DefaultConfig()
-	config.MaxKeySize = 4
-	config.MaxValueSize = 8
-	config.MaxSegmentSize = 64
-	config.HandleEvent = func(event any) {
-		switch ev := event.(type) {
-		case error:
-			t.Logf("event: error: %s\n", ev)
-		default:
-			t.Logf("event: %v\n", ev)
+	synctest.Test(t, func(t *testing.T) {
+		config := DefaultConfig()
+		config.MaxKeySize = 4
+		config.MaxValueSize = 8
+		config.MaxSegmentSize = 64
+		config.HandleEvent = func(event any) {
+			switch ev := event.(type) {
+			case error:
+				t.Logf("event: error: %s\n", ev)
+			default:
+				t.Logf("event: %v\n", ev)
+			}
 		}
-	}
 
-	path, db, err := openTmpDB(t, "TestDB_SingleThreaded", config)
-	if err != nil {
-		t.Fatalf("opening tmp DB directory: %v", err)
-	}
-	defer os.RemoveAll(path)
-
-	segs, err := filepath.Glob(filepath.Join(path, "*.seg"))
-	if err != nil {
-		t.Fatalf("reading directory: %v", err)
-	}
-	if want := 1; len(segs) != want {
-		t.Fatalf("want %d file, got %d", want, len(segs))
-	}
-
-	ops := []struct {
-		Op    string
-		Key   string
-		Value []byte
-		Err   error
-	}{
-		{"Put", "aaaa", []byte("v1aaaaaa"), nil},               // 32 = 20 + 12
-		{"Put", "bbbb", []byte("v1bbbbbb"), nil},               // 32 = 20 + 12
-		{"Put", "cccc", []byte("v1cc"), nil},                   // 28 = 20 + 8
-		{"Get", "aaaa", []byte("v1aaaaaa"), nil},               // 0
-		{"Put", "aaaa", []byte("v2aaaaaa"), nil},               // 32 = 20 + 12
-		{"Del", "bbbb", nil, nil},                              // 24 = 20 + 4
-		{"Put", "dddd", []byte("v1dd"), nil},                   // 28 = 20 + 8
-		{"Get", "aaaa", []byte("v2aaaaaa"), nil},               // 0
-		{"Put", "eeee", []byte("v1ee"), nil},                   // 28 = 20 + 8
-		{"Put", "ffff", []byte("v1ff"), nil},                   // 28 = 20 + 8
-		{"Get", "bbbb", nil, ErrKeyNotFound},                   // 0
-		{"Del", "x", nil, nil},                                 // 0
-		{"Put", "aaaaa", []byte("v3aaaaaa"), ErrKeyTooLarge},   // 0
-		{"Put", "aaaa", []byte("v4aaaaaaa"), ErrValueTooLarge}, // 0
-		{"Get", "z", nil, ErrKeyNotFound},                      // 0
-		{"Get", "cccc", []byte("v1cc"), nil},                   // 0
-		{"Get", "ffff", []byte("v1ff"), nil},                   // 0
-		{"Get", "aaaa", []byte("v2aaaaaa"), nil},               // 0
-	}
-
-	for i, op := range ops {
-		t.Logf("i=%d", i)
-		assertOp(t, db, op.Op, op.Key, op.Value, 0, op.Err)
-	}
-
-	if err := db.Close(); err != nil {
-		t.Fatalf("closing DB: %v", err)
-	}
-
-	segs, err = filepath.Glob(filepath.Join(path, "*.seg"))
-	if err != nil {
-		t.Fatalf("reading directory: %v", err)
-	}
-
-	// The exact number of segment files to expect depends on when the log
-	// compaction starts/ends relative to the test.
-	if wantLow, wantHigh := 3, 4; len(segs) < wantLow || len(segs) > wantHigh {
-		t.Fatalf("want between %d and %d files (inclusive), got %d", wantLow, wantHigh, len(segs))
-	}
-
-	for _, seg := range segs {
-		info, err := os.Stat(seg)
+		path, db, err := openTmpDB(t, "TestDB_SingleThreaded", config)
 		if err != nil {
-			t.Fatalf("statting %s: %v", info.Name(), err)
+			t.Fatalf("opening tmp DB directory: %v", err)
 		}
-		if info.Size() > config.MaxSegmentSize {
-			t.Fatalf("%s: want size <= %d, got size: %d", info.Name(), config.MaxSegmentSize, info.Size())
+		defer os.RemoveAll(path)
+
+		segs, err := filepath.Glob(filepath.Join(path, "*.seg"))
+		if err != nil {
+			t.Fatalf("reading directory: %v", err)
 		}
-	}
+		if want := 1; len(segs) != want {
+			t.Fatalf("want %d file, got %d", want, len(segs))
+		}
 
-	db, err = Open(path, config)
-	if err != nil {
-		t.Fatalf("re-opening DB: %v", err)
-	}
-	defer db.Close()
+		// record size = 8B + 4B + 4B + len(key) + len(value) + 4B
+		//             = 20B + len(key) + len(value)
+		// prev WAL segment size + record size = new WAL segment size
+		ops := []struct {
+			Op    string
+			Key   string
+			Value []byte
+			Err   error
+		}{
+			// prev WAL size + record size = new WAL size
 
-	ops = []struct {
-		Op    string
-		Key   string
-		Value []byte
-		Err   error
-	}{
-		{"Get", "aaaa", []byte("v2aaaaaa"), nil},
-		{"Get", "bbbb", nil, ErrKeyNotFound},
-		{"Get", "z", nil, ErrKeyNotFound},
-		{"Get", "cccc", []byte("v1cc"), nil},
-		{"Get", "ffff", []byte("v1ff"), nil},
-		{"Get", "aaaa", []byte("v2aaaaaa"), nil},
-	}
+			// Segment 1 = aaaa:v1aaaaaa, bbbb:v1bbbbbb
+			{"Put", "aaaa", []byte("v1aaaaaa"), nil}, // 0 + 32 = 32
+			{"Put", "bbbb", []byte("v1bbbbbb"), nil}, // 32 + 32 = 64
 
-	for i, op := range ops {
-		t.Logf("i=%d", i)
-		assertOp(t, db, op.Op, op.Key, op.Value, 0, op.Err)
-	}
+			// Segment 2 = cccc:v1cc, aaaa:v1aaaaaa
+			{"Put", "cccc", []byte("v1cc"), nil}, // 0 + 28 = 28
+			{"Get", "aaaa", []byte("v1aaaaaa"), nil},
+			{"Put", "aaaa", []byte("v2aaaaaa"), nil}, // 28 + 32 = 60
+
+			// Segment 3 = bbbb:, dddd:v1dd
+			{"Del", "bbbb", nil, nil},            // 0 + 24 = 24
+			{"Put", "dddd", []byte("v1dd"), nil}, // 24 + 28 = 52
+			{"Get", "aaaa", []byte("v2aaaaaa"), nil},
+
+			// Segment 4 = eeee:v1ee, ffff:v1ff
+			{"Put", "eeee", []byte("v1ee"), nil}, // 0 + 28 = 28
+			{"Put", "ffff", []byte("v1ff"), nil}, // 28 + 28 = 56
+			{"Get", "bbbb", nil, ErrKeyNotFound},
+
+			// Writes nothing, key does not exist.
+			{"Del", "x", nil, nil},
+
+			// Writes nothing, key too large.
+			{"Put", "aaaaa", []byte("v3aaaaaa"), ErrKeyTooLarge},
+
+			// Writes nothing, value too large.
+			{"Put", "aaaa", []byte("v4aaaaaaa"), ErrValueTooLarge},
+
+			{"Get", "z", nil, ErrKeyNotFound},
+			{"Get", "cccc", []byte("v1cc"), nil},
+			{"Get", "ffff", []byte("v1ff"), nil},
+			{"Get", "aaaa", []byte("v2aaaaaa"), nil},
+		}
+
+		for _, op := range ops {
+			synctest.Wait() // Wait for log compaction to complete.
+			assertOp(t, db, op.Op, op.Key, op.Value, 0, op.Err)
+		}
+
+		if err := db.Close(); err != nil {
+			t.Fatalf("closing DB: %v", err)
+		}
+
+		segs, err = filepath.Glob(filepath.Join(path, "*.seg"))
+		if err != nil {
+			t.Fatalf("reading directory: %v", err)
+		}
+
+		if want := 3; len(segs) != want {
+			t.Fatalf("want %d files, got %d", want, len(segs))
+		}
+
+		for _, seg := range segs {
+			info, err := os.Stat(seg)
+			if err != nil {
+				t.Fatalf("statting %s: %v", info.Name(), err)
+			}
+			if info.Size() > config.MaxSegmentSize {
+				t.Fatalf("%s: want size <= %d, got size: %d", info.Name(), config.MaxSegmentSize, info.Size())
+			}
+		}
+
+		db, err = Open(path, config)
+		if err != nil {
+			t.Fatalf("re-opening DB: %v", err)
+		}
+		defer db.Close()
+
+		ops = []struct {
+			Op    string
+			Key   string
+			Value []byte
+			Err   error
+		}{
+			{"Get", "aaaa", []byte("v2aaaaaa"), nil},
+			{"Get", "bbbb", nil, ErrKeyNotFound},
+			{"Get", "z", nil, ErrKeyNotFound},
+			{"Get", "cccc", []byte("v1cc"), nil},
+			{"Get", "ffff", []byte("v1ff"), nil},
+			{"Get", "aaaa", []byte("v2aaaaaa"), nil},
+		}
+
+		for _, op := range ops {
+			assertOp(t, db, op.Op, op.Key, op.Value, 0, op.Err)
+		}
+	})
 }
 
 func TestGet_WhileCompactingLog(t *testing.T) {
@@ -270,7 +289,7 @@ func TestGet_WhileCompactingLog(t *testing.T) {
 				return
 			}
 		}
-		c <- nil
+		close(c)
 	}()
 
 	<-c
