@@ -19,10 +19,10 @@ const bufSize = 4096
 //	| Expiry (8B) | Key Size (4B) | Value Size (4B) |  Key  | Value | CRC (4B) |
 //	+-------------+---------------+-----------------+- ... -+- ... -+----------+
 const (
-	expOff, expEnd = 0, kszOff
-	kszOff, kszEnd = expOff + 8, vszOff
-	vszOff, vszEnd = kszOff + 4, headerSize
-	headerSize     = vszOff + 4
+	expOff, expEnd = 0, expOff + 8
+	kszOff, kszEnd = expEnd, kszOff + 4
+	vszOff, vszEnd = kszEnd, vszOff + 4
+	headerSize     = vszEnd
 	crcSize        = 4
 	metaSize       = headerSize + crcSize
 )
@@ -164,19 +164,19 @@ func (e *walRecordEncoder) Encode(rec walRecord) (n int64, err error) {
 	nn, err = mw.Write(rec.Key)
 	n += int64(nn)
 	if err != nil {
-		return n, fmt.Errorf("writing key: %w", err)
+		return n, fmt.Errorf("writing record key: %w", err)
 	}
 
 	nn, err = mw.Write(rec.Value)
 	n += int64(nn)
 	if err != nil {
-		return n, fmt.Errorf("writing value: %w", err)
+		return n, fmt.Errorf("writing record value: %w", err)
 	}
 
 	nn, err = e.bw.Write(h.Sum(nil)) // h.Sum is big-endian
 	n += int64(nn)
 	if err != nil {
-		return n, fmt.Errorf("writing value: %w", err)
+		return n, fmt.Errorf("writing record CRC: %w", err)
 	}
 
 	if err = e.bw.Flush(); err != nil {
