@@ -43,13 +43,6 @@ type stdMutex struct{ sync.Mutex }
 func (l *stdMutex) RLock()   { l.Lock() }
 func (l *stdMutex) RUnlock() { l.Unlock() }
 
-// recordLoc specifies the location and size of a record.
-type recordLoc struct {
-	SegmentID segmentID // The ID of the segment in which the record is stored.
-	Offset    int64     // The byte offset at which the record is stored within the segment.
-	Size      int64     // The byte size of the record.
-}
-
 // DB implements a high-performance, persistent key-value store. It is safe for
 // concurrent use.
 type DB struct {
@@ -61,7 +54,7 @@ type DB struct {
 	fwEncoder   *walRecordEncoder      // Active segment encoder.
 	fwOffset    int64                  // Active segment current offset.
 	frs         map[segmentID]*os.File // Set of segments opened for reading.
-	index       map[string]recordLoc   // Records indexed by key.
+	index       RecordIndexer          // Records indexed by key.
 	mu          rwLocker
 	compacting  chan struct{}
 	closed      error
@@ -165,7 +158,7 @@ func open(dir *os.File, config Config) (*DB, error) {
 
 	// Open and index all segment files.
 	frs := make(map[segmentID]*os.File, len(sids))
-	index := make(map[string]recordLoc)
+	index := mapIndex(make(map[string]RecordDescription))
 
 	for _, sid := range sids {
 		fr, err := os.Open(filepath.Join(dir.Name(), sid.Filename()))
@@ -211,13 +204,13 @@ func open(dir *os.File, config Config) (*DB, error) {
 				}
 
 				if ttl, _ := rec.RecordTTL(); ttl <= 0 {
-					delete(index, string(rec.Key))
+					index.Delete(string(rec.Key))
 				} else {
-					index[string(rec.Key)] = recordLoc{
+					index.Put(string(rec.Key), RecordDescription{
 						SegmentID: sid,
 						Offset:    rec.RecordOffset(),
 						Size:      rec.RecordSize(),
-					}
+					})
 				}
 
 				offset += n
@@ -252,13 +245,13 @@ func open(dir *os.File, config Config) (*DB, error) {
 
 				ttl, _ := rec.TTL()
 				if len(rec.Value) == 0 || ttl <= 0 {
-					delete(index, string(rec.Key))
+					index.Delete(string(rec.Key))
 				} else {
-					index[string(rec.Key)] = recordLoc{
+					index.Put(string(rec.Key), RecordDescription{
 						SegmentID: sid,
 						Offset:    offset,
 						Size:      rec.Size(),
-					}
+					})
 				}
 
 				offset += n
@@ -314,7 +307,7 @@ func (db *DB) Get(key string) ([]byte, error) {
 		if errors.Is(err, ErrRecordExpired) {
 			db.mu.Lock()
 			defer db.mu.Unlock()
-			delete(db.index, key)
+			db.index.Delete(key)
 			return nil, ErrKeyNotFound
 		}
 		return nil, err
@@ -322,15 +315,15 @@ func (db *DB) Get(key string) ([]byte, error) {
 	return v, nil
 }
 
-func (db *DB) indexGet(key string) (recordLoc, io.ReaderAt, error) {
+func (db *DB) indexGet(key string) (RecordDescription, io.ReaderAt, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	if db.closed != nil {
-		return recordLoc{}, nil, db.closed
+		return RecordDescription{}, nil, db.closed
 	}
-	rec, ok := db.index[key]
+	rec, ok := db.index.Get(key)
 	if !ok {
-		return recordLoc{}, nil, ErrKeyNotFound
+		return RecordDescription{}, nil, ErrKeyNotFound
 	}
 	return rec, db.frs[rec.SegmentID], nil
 }
@@ -379,7 +372,7 @@ func (db *DB) put(key string, value []byte, expiry expiryTimestamp) error {
 	}
 
 	if len(value) == 0 {
-		if _, ok := db.index[key]; !ok {
+		if _, ok := db.index.Get(key); !ok {
 			return nil
 		}
 	}
@@ -422,13 +415,13 @@ func (db *DB) put(key string, value []byte, expiry expiryTimestamp) error {
 	}
 
 	if len(value) == 0 {
-		delete(db.index, key)
+		db.index.Delete(key)
 	} else {
-		db.index[key] = recordLoc{
+		db.index.Put(key, RecordDescription{
 			SegmentID: db.fwID,
 			Offset:    db.fwOffset,
 			Size:      rec.Size(),
-		}
+		})
 	}
 
 	db.fwOffset += n

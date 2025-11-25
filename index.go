@@ -8,6 +8,36 @@ import (
 	"time"
 )
 
+// RecordDescription specifies the location and size of a record.
+type RecordDescription struct {
+	SegmentID segmentID // The ID of the segment in which the record is stored.
+	Offset    int64     // The byte offset at which the record is stored within the segment.
+	Size      int64     // The byte size of the record.
+}
+
+// RecordIndexer is an index mapping keys to [RecordDescription]s.
+type RecordIndexer interface {
+	Get(key string) (RecordDescription, bool)
+	Put(key string, value RecordDescription)
+	Delete(key string)
+}
+
+// TODO: Implement a skip list index.
+type mapIndex map[string]RecordDescription
+
+func (m mapIndex) Get(key string) (RecordDescription, bool) {
+	v, ok := m[key]
+	return v, ok
+}
+
+func (m mapIndex) Put(key string, value RecordDescription) {
+	m[key] = value
+}
+
+func (m mapIndex) Delete(key string) {
+	delete(m, key)
+}
+
 // Offsets to fields in a binary encoded [indexRecord], for which the format is:
 //
 //	+-------------+-------------+-----------+---------------+- ... -+
