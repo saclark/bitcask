@@ -43,50 +43,61 @@ func releaseDirLock(dir *os.File) error {
 	return nil
 }
 
+type syncError struct {
+	err error
+}
+
+func (e *syncError) Error() string {
+	return fmt.Sprintf("bitcask: file sync failed: %s", e.err)
+}
+
+func (e *syncError) Unwrap() error {
+	return e.err
+}
+
 // createFile creates the named file directly under dir and then calls [os.Sync]
 // on dir to ensure durability.
 //
 // TODO: Consider pre-allocating file space with fallocate() for perf
 // optimization?
-// TODO: Distinguish open error from sync error.
 func createFile(dir *os.File, name string, flag int, perm fs.FileMode) (*os.File, error) {
 	f, err := os.OpenFile(filepath.Join(dir.Name(), name), flag, perm)
 	if err != nil {
 		return nil, fmt.Errorf("opening new file: %w", err)
 	}
 	if err := dir.Sync(); err != nil {
-		return nil, fmt.Errorf("syncing parent directory %s: %w", dir.Name(), err)
+		return nil, &syncError{
+			err: fmt.Errorf("syncing parent directory %s: %w", dir.Name(), err),
+		}
 	}
 	return f, nil
 }
 
 // removeFile removes the named file and then calls [os.Sync] on parentDir.
-//
-// TODO: Distinguish remove error from sync error.
 func removeFile(parentDir *os.File, name string) error {
 	if err := os.Remove(name); err != nil {
 		return fmt.Errorf("removing %s: %w", name, err)
 	}
 	if err := parentDir.Sync(); err != nil {
-		return fmt.Errorf(
-			"syncing parent directory %s: %w",
-			parentDir.Name(),
-			err,
-		)
+		return &syncError{
+			err: fmt.Errorf(
+				"syncing parent directory %s: %w",
+				parentDir.Name(),
+				err,
+			),
+		}
 	}
 	return nil
 }
 
 // syncAndClose calls [os.Sync] and [os.Close] on f if not nil.
-//
-// TODO: Distinguish sync error from close error.
 func syncAndClose(f *os.File) error {
 	if f == nil {
 		return nil
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close() // try to close, ignore error
-		return fmt.Errorf("syncing %s: %v", f.Name(), err)
+		return &syncError{err: fmt.Errorf("syncing %s: %v", f.Name(), err)}
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("closing %s: %v", f.Name(), err)
