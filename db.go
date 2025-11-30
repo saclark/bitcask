@@ -447,7 +447,7 @@ func (db *DB) RotateSegment() error {
 // rotateSegment causes the database to begin writing to a new active segment.
 // Callers must take care to Lock() before calling this method.
 func (db *DB) rotateSegment() (err error) {
-	sid := db.nextUncompactedSegmentID()
+	sid := nextUncompactedSegmentID(db.frs)
 
 	var fw, fr *os.File
 	fw, err = createFile(db.dir, sid.Filename(), segFileFlag, segFileMode)
@@ -727,7 +727,7 @@ func (db *DB) compactSegment(s *compactionState, srcSID segmentID) error {
 
 func (db *DB) rotateCompactedSegment(s *compactionState) error {
 	db.mu.RLock()
-	s.dstSID = db.nextCompactedSegmentID()
+	s.dstSID = nextCompactedSegmentID(db.frs)
 	db.mu.RUnlock()
 
 	if s.dst == nil {

@@ -152,10 +152,9 @@ func (id segmentID) IndexFilename() string {
 
 // nextCompactedSegmentID returns the next ID to use in the series of
 // monotonically increasing segment IDs representing compacted segments.
-// Callers must take care to Lock() before calling this method.
-func (db *DB) nextCompactedSegmentID() segmentID {
+func nextCompactedSegmentID(frs map[segmentID]*os.File) segmentID {
 	max := minCompactedSegmentID
-	for sid := range db.frs {
+	for sid := range frs {
 		if sid.Compacted() && sid > max {
 			max = sid
 		}
@@ -165,10 +164,9 @@ func (db *DB) nextCompactedSegmentID() segmentID {
 
 // nextUncompactedSegmentID returns the next ID to use in the series of
 // monotonically increasing segment IDs representing uncompacted segments.
-// Callers must take care to Lock() before calling this method.
-func (db *DB) nextUncompactedSegmentID() segmentID {
+func nextUncompactedSegmentID(frs map[segmentID]*os.File) segmentID {
 	max := minUncompactedSegmentID
-	for sid := range db.frs {
+	for sid := range frs {
 		if !sid.Compacted() && sid > max {
 			max = sid
 		}
