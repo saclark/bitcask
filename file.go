@@ -67,24 +67,21 @@ func createFile(dir *os.File, name string, flag int, perm fs.FileMode) (*os.File
 	}
 	if err := dir.Sync(); err != nil {
 		return nil, &syncError{
-			err: fmt.Errorf("syncing parent directory %s: %w", dir.Name(), err),
+			err: fmt.Errorf("syncing %s: %w", dir.Name(), err),
 		}
 	}
 	return f, nil
 }
 
-// removeFile removes the named file and then calls [os.Sync] on parentDir.
+// removeFile removes the named file and then calls [os.Sync] on parentDir to
+// ensure durability.
 func removeFile(parentDir *os.File, name string) error {
 	if err := os.Remove(name); err != nil {
 		return fmt.Errorf("removing %s: %w", name, err)
 	}
 	if err := parentDir.Sync(); err != nil {
 		return &syncError{
-			err: fmt.Errorf(
-				"syncing parent directory %s: %w",
-				parentDir.Name(),
-				err,
-			),
+			err: fmt.Errorf("syncing %s: %w", parentDir.Name(), err),
 		}
 	}
 	return nil
@@ -95,12 +92,13 @@ func syncAndClose(f *os.File) error {
 	if f == nil {
 		return nil
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close() // try to close, ignore error
-		return &syncError{err: fmt.Errorf("syncing %s: %v", f.Name(), err)}
+	syncErr := f.Sync()
+	closeErr := f.Close() // Try to Close(), even if Sync() failed.
+	if syncErr != nil {
+		return &syncError{err: fmt.Errorf("syncing %s: %w", f.Name(), syncErr)}
 	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("closing %s: %v", f.Name(), err)
+	if closeErr != nil {
+		return fmt.Errorf("closing %s: %w", f.Name(), closeErr)
 	}
 	return nil
 }

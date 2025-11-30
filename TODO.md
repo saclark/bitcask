@@ -1,6 +1,5 @@
 # TODO
 
-* [ ] Produce .index files during merge and use them to Open DB.
 * [ ] Support batching writes and/or add configuration options to automatically Sync() after every n seconds and/or n records written.
 * [ ] Shutdown DB entirely and return error if a file Sync() errs.
 * [ ] Allow cancelation of log compaction. Replace Close() with Shudown(context.Context).

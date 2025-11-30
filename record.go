@@ -19,12 +19,12 @@ const bufSize = 4096
 //	| Expiry (8B) | Key Size (4B) | Value Size (4B) |  Key  | Value | CRC (4B) |
 //	+-------------+---------------+-----------------+- ... -+- ... -+----------+
 const (
-	expOff, expEnd = 0, expOff + 8
-	kszOff, kszEnd = expEnd, kszOff + 4
-	vszOff, vszEnd = kszEnd, vszOff + 4
-	headerSize     = vszEnd
-	crcSize        = 4
-	metaSize       = headerSize + crcSize
+	wrExpOff, wrExpEnd = 0, wrExpOff + 8
+	wrKszOff, wrKszEnd = wrExpEnd, wrKszOff + 4
+	wrVszOff, wrVszEnd = wrKszEnd, wrVszOff + 4
+	wrHeaderSize       = wrVszEnd
+	wrCrcSize          = 4
+	wrMetaSize         = wrHeaderSize + wrCrcSize
 )
 
 var (
@@ -33,7 +33,7 @@ var (
 )
 
 func recordSize(keySize, valueSize int) int64 {
-	return headerSize + int64(keySize) + int64(valueSize) + crcSize
+	return wrHeaderSize + int64(keySize) + int64(valueSize) + wrCrcSize
 }
 
 // expiryTimestamp is a Unix time in nanoseconds. The minimum int64 value
@@ -111,7 +111,7 @@ func newWALRecord(key []byte, value []byte, expiry expiryTimestamp) walRecord {
 // Size returns the byte size of the full [walRecord] when written to the
 // segment.
 func (r *walRecord) Size() int64 {
-	return headerSize + int64(len(r.Key)) + int64(len(r.Value)) + crcSize
+	return wrHeaderSize + int64(len(r.Key)) + int64(len(r.Value)) + wrCrcSize
 }
 
 // TTL returns the remaining time to live for the record and a boolean
@@ -146,10 +146,10 @@ func (e *walRecordEncoder) Encode(rec walRecord) (n int64, err error) {
 		}
 	}()
 
-	header := make([]byte, headerSize)
-	binary.BigEndian.PutUint64(header[expOff:expEnd], rec.Expiry.mapToUInt64())
-	binary.BigEndian.PutUint32(header[kszOff:kszEnd], uint32(len(rec.Key)))
-	binary.BigEndian.PutUint32(header[vszOff:vszEnd], uint32(len(rec.Value)))
+	header := make([]byte, wrHeaderSize)
+	binary.BigEndian.PutUint64(header[wrExpOff:wrExpEnd], rec.Expiry.mapToUInt64())
+	binary.BigEndian.PutUint32(header[wrKszOff:wrKszEnd], uint32(len(rec.Key)))
+	binary.BigEndian.PutUint32(header[wrVszOff:wrVszEnd], uint32(len(rec.Value)))
 
 	h := crc32.NewIEEE()
 	mw := io.MultiWriter(e.bw, h)
@@ -203,14 +203,14 @@ func (d *walRecordDecoder) Decode(rec *walRecord) (n int64, err error) {
 	h := crc32.NewIEEE()
 	tr := io.TeeReader(d.br, h)
 
-	header := make([]byte, headerSize)
+	header := make([]byte, wrHeaderSize)
 	nn, err := io.ReadFull(tr, header)
 	n += int64(nn)
 	if err != nil {
 		return n, err
 	}
 
-	ksz := binary.BigEndian.Uint32(header[kszOff:kszEnd])
+	ksz := binary.BigEndian.Uint32(header[wrKszOff:wrKszEnd])
 
 	k := make([]byte, ksz)
 	nn, err = io.ReadFull(tr, k)
@@ -219,7 +219,7 @@ func (d *walRecordDecoder) Decode(rec *walRecord) (n int64, err error) {
 		return n, err
 	}
 
-	vsz := binary.BigEndian.Uint32(header[vszOff:vszEnd])
+	vsz := binary.BigEndian.Uint32(header[wrVszOff:wrVszEnd])
 
 	v := make([]byte, vsz)
 	nn, err = io.ReadFull(tr, v)
@@ -228,7 +228,7 @@ func (d *walRecordDecoder) Decode(rec *walRecord) (n int64, err error) {
 		return n, err
 	}
 
-	crc := make([]byte, crcSize)
+	crc := make([]byte, wrCrcSize)
 	nn, err = io.ReadFull(d.br, crc)
 	n += int64(nn)
 	if err != nil {
@@ -239,7 +239,7 @@ func (d *walRecordDecoder) Decode(rec *walRecord) (n int64, err error) {
 		return n, ErrCorruptRecord
 	}
 
-	expiry := mapUint64ToExpiry(binary.BigEndian.Uint64(header[expOff:expEnd]))
+	expiry := mapUint64ToExpiry(binary.BigEndian.Uint64(header[wrExpOff:wrExpEnd]))
 
 	rec.Expiry = expiry
 	rec.Key = k
@@ -266,7 +266,7 @@ func (e *unreachableError) Error() string {
 }
 
 func readRecordValueUnbuffered(ra io.ReaderAt, recordOff, recordSize int64) ([]byte, error) {
-	if recordSize < metaSize {
+	if recordSize < wrMetaSize {
 		return nil, &unreachableError{detail: fmt.Sprintf("readRecordValueUnbuffered: invalid record size: %d", recordSize)}
 	}
 
@@ -279,26 +279,26 @@ func readRecordValueUnbuffered(ra io.ReaderAt, recordOff, recordSize int64) ([]b
 	}
 
 	h := crc32.NewIEEE()
-	if _, err := h.Write(b[:len(b)-crcSize]); err != nil {
+	if _, err := h.Write(b[:len(b)-wrCrcSize]); err != nil {
 		return nil, err
 	}
-	if h.Sum32() != binary.BigEndian.Uint32(b[len(b)-crcSize:]) {
+	if h.Sum32() != binary.BigEndian.Uint32(b[len(b)-wrCrcSize:]) {
 		return nil, ErrCorruptRecord
 	}
 
-	expiry := mapUint64ToExpiry(binary.BigEndian.Uint64(b[expOff:expEnd]))
+	expiry := mapUint64ToExpiry(binary.BigEndian.Uint64(b[wrExpOff:wrExpEnd]))
 	if ttl, _ := expiry.TTL(); ttl <= 0 {
 		return nil, ErrRecordExpired
 	}
 
-	ksz := binary.BigEndian.Uint32(b[kszOff:kszEnd])
-	v := b[headerSize+ksz : len(b)-crcSize]
+	ksz := binary.BigEndian.Uint32(b[wrKszOff:wrKszEnd])
+	v := b[wrHeaderSize+ksz : len(b)-wrCrcSize]
 
 	return v, nil
 }
 
 func readRecordValueBuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []byte, err error) {
-	if recordSize < metaSize {
+	if recordSize < wrMetaSize {
 		return nil, &unreachableError{detail: fmt.Sprintf("readRecordValueBuffered: invalid record size: %d", recordSize)}
 	}
 
@@ -308,7 +308,7 @@ func readRecordValueBuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []b
 	h := crc32.NewIEEE()
 
 	// Read the header and write it to the CRC hash.
-	header := make([]byte, headerSize)
+	header := make([]byte, wrHeaderSize)
 	if _, err = io.ReadFull(br, header); err != nil {
 		return nil, err
 	}
@@ -317,7 +317,7 @@ func readRecordValueBuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []b
 	}
 
 	// Copy the key directly to the CRC hash.
-	ksz := binary.BigEndian.Uint32(header[kszOff:kszEnd])
+	ksz := binary.BigEndian.Uint32(header[wrKszOff:wrKszEnd])
 	if _, err = io.CopyN(h, br, int64(ksz)); err != nil {
 		if errors.Is(err, io.EOF) {
 			return nil, io.ErrUnexpectedEOF
@@ -326,7 +326,7 @@ func readRecordValueBuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []b
 	}
 
 	// Read the value and write it to the CRC hash.
-	vsz := binary.BigEndian.Uint32(header[vszOff:vszEnd])
+	vsz := binary.BigEndian.Uint32(header[wrVszOff:wrVszEnd])
 	v = make([]byte, vsz)
 	if _, err = io.ReadFull(br, v); err != nil {
 		return nil, err
@@ -336,7 +336,7 @@ func readRecordValueBuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []b
 	}
 
 	// Read the CRC and compare it to the computed CRC.
-	crc := make([]byte, crcSize)
+	crc := make([]byte, wrCrcSize)
 	if _, err = io.ReadFull(br, crc); err != nil {
 		return nil, err
 	}
@@ -344,7 +344,7 @@ func readRecordValueBuffered(ra io.ReaderAt, recordOff, recordSize int64) (v []b
 		return nil, ErrCorruptRecord
 	}
 
-	expiry := mapUint64ToExpiry(binary.BigEndian.Uint64(header[expOff:expEnd]))
+	expiry := mapUint64ToExpiry(binary.BigEndian.Uint64(header[wrExpOff:wrExpEnd]))
 	if ttl, _ := expiry.TTL(); ttl <= 0 {
 		return nil, ErrRecordExpired
 	}

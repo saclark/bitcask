@@ -65,11 +65,11 @@ func (r *indexRecord) RecordTTL() (ttl time.Duration, hasExpiry bool) {
 }
 
 func (r *indexRecord) RecordOffset() int64 {
-	return int64(r.offset) // TODO: Assert cast is safe.
+	return int64(r.offset) // Safe cast, always positive.
 }
 
 func (r *indexRecord) RecordSize() int64 {
-	return int64(r.size) // TODO: Assert cast is safe.
+	return int64(r.size) // Safe cast, always positive.
 }
 
 // indexRecordEncoder writes [indexRecord] values to an output stream.
