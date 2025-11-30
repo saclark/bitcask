@@ -499,6 +499,16 @@ func (e *LogCompactionError) Unwrap() error {
 	return e.err
 }
 
+type compactionState struct {
+	dst                  *managedFile
+	dstSID               segmentID
+	dstOffset            int64
+	walEncoder           *walRecordEncoder
+	idx                  *managedFile
+	idxEncoder           *indexRecordEncoder
+	firstNewCompactedSID segmentID
+}
+
 // CompactLog runs log compaction unless already underway or the [DB] is closed.
 // If a log compaction process is already underway, it returns false and a nil
 // error. If the [DB] is closed, it returns false and [ErrDatabaseClosed].
@@ -510,20 +520,6 @@ func (e *LogCompactionError) Unwrap() error {
 // maximum size given by [Config.MaxSegmentSize]. However, this method allows
 // callers to manually trigger a log compaction at will.
 func (db *DB) CompactLog() (started bool, err error) {
-	return new(logCompactor).compactLog(db)
-}
-
-type logCompactor struct {
-	dst                  *managedFile
-	dstSID               segmentID
-	dstOffset            int64
-	walEncoder           *walRecordEncoder
-	idx                  *managedFile
-	idxEncoder           *indexRecordEncoder
-	firstNewCompactedSID segmentID
-}
-
-func (c *logCompactor) compactLog(db *DB) (started bool, err error) {
 	select {
 	case _, ok := <-db.compacting:
 		if !ok {
@@ -543,10 +539,25 @@ func (c *logCompactor) compactLog(db *DB) (started bool, err error) {
 		return false, nil
 	}
 
+	// Identify inactive segments to compact.
+	db.mu.RLock()
+	activeSIDAsOfStart := db.fwID
+	var sids []segmentID
+	for sid := range db.frs {
+		if sid < activeSIDAsOfStart {
+			sids = append(sids, sid)
+		}
+	}
+	db.mu.RUnlock()
+
+	slices.Sort(sids)
+
+	s := &compactionState{}
+
 	// Cleanup resources when complete.
 	defer func() {
-		dstErr := c.dst.Cleanup()
-		idxErr := c.idx.Cleanup()
+		dstErr := s.dst.Cleanup()
+		idxErr := s.idx.Cleanup()
 		dirErr := db.dir.Sync()
 		if dirErr != nil {
 			dirErr = &syncError{
@@ -566,24 +577,11 @@ func (c *logCompactor) compactLog(db *DB) (started bool, err error) {
 		}
 	}()
 
-	// Identify inactive segments to compact.
-	db.mu.RLock()
-	activeSIDAsOfStart := db.fwID
-	var sids []segmentID
-	for sid := range db.frs {
-		if sid < activeSIDAsOfStart {
-			sids = append(sids, sid)
-		}
-	}
-	db.mu.RUnlock()
-
-	slices.Sort(sids)
-
 	// Compact segments.
 	for _, sid := range sids {
-		if err = c.compactSegment(db, sid); err != nil {
+		if err = db.compactSegment(s, sid); err != nil {
 			return true, fmt.Errorf(
-				"compacting segment file %s: %v",
+				"compacting segment file %s: %w",
 				sid.Filename(),
 				err,
 			)
@@ -593,7 +591,7 @@ func (c *logCompactor) compactLog(db *DB) (started bool, err error) {
 	// Remove the segments we just compacted.
 	db.mu.Lock()
 	for sid, fr := range db.frs {
-		if sid < c.firstNewCompactedSID ||
+		if sid < s.firstNewCompactedSID ||
 			(!sid.Compacted() && sid < activeSIDAsOfStart) {
 			delete(db.frs, sid)
 			_ = fr.Close()           // ignore error, read-only file
@@ -608,7 +606,7 @@ func (c *logCompactor) compactLog(db *DB) (started bool, err error) {
 	return true, nil
 }
 
-func (c *logCompactor) compactSegment(db *DB, srcSID segmentID) error {
+func (db *DB) compactSegment(s *compactionState, srcSID segmentID) error {
 	srcPath := filepath.Join(db.dir.Name(), srcSID.Filename())
 	src, err := os.Open(srcPath)
 	if err != nil {
@@ -652,14 +650,14 @@ func (c *logCompactor) compactSegment(db *DB, srcSID segmentID) error {
 		db.mu.RUnlock()
 
 		// Create a new segment if necessary.
-		if c.dst == nil || c.dstOffset+rec.Size() > db.cfg.MaxSegmentSize {
-			if err := c.rotateCompactedSegment(db); err != nil {
-				return fmt.Errorf("rotating compacted segment: %v", err)
+		if s.dst == nil || s.dstOffset+rec.Size() > db.cfg.MaxSegmentSize {
+			if err := db.rotateCompactedSegment(s); err != nil {
+				return fmt.Errorf("rotating compacted segment: %w", err)
 			}
 		}
 
 		// Encode the record.
-		nWritten, err := c.walEncoder.Encode(rec)
+		nWritten, err := s.walEncoder.Encode(rec)
 		if err != nil {
 			if nWritten == 0 || nWritten == rec.Size() {
 				return err
@@ -676,35 +674,35 @@ func (c *logCompactor) compactSegment(db *DB, srcSID segmentID) error {
 			db.writeClosed = fmt.Errorf(
 				"%w: preventing further writes due to invalid record: record starting at byte %d in segment file %s: %w",
 				ErrDatabaseReadOnly,
-				c.dstOffset,
-				c.dstSID.Filename(),
+				s.dstOffset,
+				s.dstSID.Filename(),
 				ErrPartialWrite,
 			)
 
 			return fmt.Errorf(
 				"writing record starting at byte %d in segment file %s: %w: %w",
-				c.dstOffset,
-				c.dstSID.Filename(),
+				s.dstOffset,
+				s.dstSID.Filename(),
 				ErrPartialWrite,
 				err,
 			)
 		}
 
 		// Encode the index record.
-		if c.idx != nil {
-			_, err := c.idxEncoder.Encode(indexRecord{
+		if s.idx != nil {
+			_, err := s.idxEncoder.Encode(indexRecord{
 				expiry: rec.Expiry,
-				offset: uint64(c.dstOffset), // Safe cast, always positive.
+				offset: uint64(s.dstOffset), // Safe cast, always positive.
 				size:   uint64(rec.Size()),  // Safe cast, always positive.
 				Key:    rec.Key,
 			})
 			// If there's an error, abort creating an index file for this
 			// segment and carry on.
 			if err != nil {
-				if err := os.Remove(c.idx.Name()); err != nil {
-					return fmt.Errorf("removing %s: %w", c.idx.Name(), err)
+				if err := os.Remove(s.idx.Name()); err != nil {
+					return fmt.Errorf("removing %s: %w", s.idx.Name(), err)
 				}
-				c.idx = nil
+				s.idx = nil
 			}
 		}
 
@@ -713,37 +711,37 @@ func (c *logCompactor) compactSegment(db *DB, srcSID segmentID) error {
 		v, ok := db.index.Get(key)
 		if ok && v.SegmentID == origLoc.SegmentID && v.Offset == origLoc.Offset {
 			db.index.Put(key, RecordDescription{
-				SegmentID: c.dstSID,
-				Offset:    c.dstOffset,
+				SegmentID: s.dstSID,
+				Offset:    s.dstOffset,
 				Size:      origLoc.Size,
 			})
 		}
 		db.mu.Unlock()
 
 		srcOffset += nRead
-		c.dstOffset += nWritten
+		s.dstOffset += nWritten
 	}
 
 	return nil
 }
 
-func (c *logCompactor) rotateCompactedSegment(db *DB) error {
+func (db *DB) rotateCompactedSegment(s *compactionState) error {
 	db.mu.RLock()
-	c.dstSID = db.nextCompactedSegmentID()
+	s.dstSID = db.nextCompactedSegmentID()
 	db.mu.RUnlock()
 
-	if c.dst == nil {
-		c.firstNewCompactedSID = c.dstSID
+	if s.dst == nil {
+		s.firstNewCompactedSID = s.dstSID
 	}
 
-	dstErr := c.dst.Cleanup()
-	idxErr := c.idx.Cleanup()
+	dstErr := s.dst.Cleanup()
+	idxErr := s.idx.Cleanup()
 	if dstErr != nil || idxErr != nil {
 		return errors.Join(dstErr, idxErr)
 	}
 
 	dstF, err := os.OpenFile(
-		filepath.Join(db.dir.Name(), c.dstSID.Filename()),
+		filepath.Join(db.dir.Name(), s.dstSID.Filename()),
 		segFileFlag,
 		segFileMode,
 	)
@@ -753,11 +751,11 @@ func (c *logCompactor) rotateCompactedSegment(db *DB) error {
 			err,
 		)
 	}
-	c.dst = newManagedFile(dstF)
-	c.walEncoder = newWALRecordEncoder(c.dst)
+	s.dst = newManagedFile(dstF)
+	s.walEncoder = newWALRecordEncoder(s.dst)
 
 	idxF, err := os.OpenFile(
-		filepath.Join(db.dir.Name(), c.dstSID.IndexFilename()),
+		filepath.Join(db.dir.Name(), s.dstSID.IndexFilename()),
 		idxFileFlag,
 		idxFileMode,
 	)
@@ -767,12 +765,12 @@ func (c *logCompactor) rotateCompactedSegment(db *DB) error {
 			err,
 		)
 	}
-	c.idx = newManagedFile(idxF)
-	c.idxEncoder = newIndexRecordEncoder(c.idx)
+	s.idx = newManagedFile(idxF)
+	s.idxEncoder = newIndexRecordEncoder(s.idx)
 
 	dstROnly, err := os.Open(filepath.Join(
 		db.dir.Name(),
-		c.dstSID.Filename(),
+		s.dstSID.Filename(),
 	))
 	if err != nil {
 		return fmt.Errorf(
@@ -782,10 +780,10 @@ func (c *logCompactor) rotateCompactedSegment(db *DB) error {
 	}
 
 	db.mu.Lock()
-	db.frs[c.dstSID] = dstROnly
+	db.frs[s.dstSID] = dstROnly
 	db.mu.Unlock()
 
-	c.dstOffset = 0
+	s.dstOffset = 0
 
 	return nil
 }
