@@ -500,13 +500,12 @@ func (e *LogCompactionError) Unwrap() error {
 }
 
 type compactionState struct {
-	dst                  *managedFile
-	dstSID               segmentID
-	dstOffset            int64
-	walEncoder           *walRecordEncoder
-	idx                  *managedFile
-	idxEncoder           *indexRecordEncoder
-	firstNewCompactedSID segmentID
+	dst        *managedFile
+	dstSID     segmentID
+	dstOffset  int64
+	walEncoder *walRecordEncoder
+	idx        *managedFile
+	idxEncoder *indexRecordEncoder
 }
 
 // CompactLog runs log compaction unless already underway or the [DB] is closed.
@@ -539,19 +538,6 @@ func (db *DB) CompactLog() (started bool, err error) {
 		return false, nil
 	}
 
-	// Identify inactive segments to compact.
-	db.mu.RLock()
-	activeSIDAsOfStart := db.fwID
-	var sids []segmentID
-	for sid := range db.frs {
-		if sid < activeSIDAsOfStart {
-			sids = append(sids, sid)
-		}
-	}
-	db.mu.RUnlock()
-
-	slices.Sort(sids)
-
 	s := &compactionState{}
 
 	// Cleanup resources when complete.
@@ -564,7 +550,6 @@ func (db *DB) CompactLog() (started bool, err error) {
 				err: fmt.Errorf("syncing %s: %w", db.dir.Name(), dirErr),
 			}
 		}
-
 		err = errors.Join(err, dstErr, idxErr, dirErr)
 
 		// TODO: Don't emit LogCompactionError if only error was related to closing files?
@@ -577,7 +562,24 @@ func (db *DB) CompactLog() (started bool, err error) {
 		}
 	}()
 
+	// Determine which segments to compact and set s.dstID to the ID of the
+	// latest compacted segment. It will get incremented when we perform a
+	// compacted segment rotation before compacting.
+	db.mu.RLock()
+	s.dstSID = minCompactedSegmentID
+	var sids []segmentID
+	for sid := range db.frs {
+		if sid < db.fwID {
+			sids = append(sids, sid)
+		}
+		if sid.Compacted() && sid > s.dstSID {
+			s.dstSID = sid
+		}
+	}
+	db.mu.RUnlock()
+
 	// Compact segments.
+	slices.Sort(sids)
 	for _, sid := range sids {
 		if err = db.compactSegment(s, sid); err != nil {
 			return true, fmt.Errorf(
@@ -588,11 +590,10 @@ func (db *DB) CompactLog() (started bool, err error) {
 		}
 	}
 
-	// Remove the segments we just compacted.
+	// Clean up the segments we just compacted.
 	db.mu.Lock()
-	for sid, fr := range db.frs {
-		if sid < s.firstNewCompactedSID ||
-			(!sid.Compacted() && sid < activeSIDAsOfStart) {
+	for _, sid := range sids {
+		if fr, ok := db.frs[sid]; ok {
 			delete(db.frs, sid)
 			_ = fr.Close()           // ignore error, read-only file
 			_ = os.Remove(fr.Name()) // ignore error
@@ -726,19 +727,13 @@ func (db *DB) compactSegment(s *compactionState, srcSID segmentID) error {
 }
 
 func (db *DB) rotateCompactedSegment(s *compactionState) error {
-	db.mu.RLock()
-	s.dstSID = nextCompactedSegmentID(db.frs)
-	db.mu.RUnlock()
-
-	if s.dst == nil {
-		s.firstNewCompactedSID = s.dstSID
-	}
-
 	dstErr := s.dst.Cleanup()
 	idxErr := s.idx.Cleanup()
 	if dstErr != nil || idxErr != nil {
 		return errors.Join(dstErr, idxErr)
 	}
+
+	s.dstSID = s.dstSID.Inc()
 
 	dstF, err := os.OpenFile(
 		filepath.Join(db.dir.Name(), s.dstSID.Filename()),
