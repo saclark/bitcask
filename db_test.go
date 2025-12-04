@@ -2,6 +2,7 @@ package bitcask
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -586,7 +587,7 @@ func TestClose_DBMethodsReturnErrDatabaseClosed(t *testing.T) {
 	}
 	defer os.RemoveAll(path)
 
-	if err := db.Close(); err != nil {
+	if err := db.Close(context.Background()); err != nil {
 		t.Fatalf("closing DB the first time: %v", err)
 	}
 
@@ -602,13 +603,13 @@ func TestClose_DBMethodsReturnErrDatabaseClosed(t *testing.T) {
 	if err := db.RotateSegment(); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("RotateSegment: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
-	if _, err := db.CompactLog(); !errors.Is(err, ErrDatabaseClosed) {
+	if _, err := db.CompactLog(context.Background()); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("CompactLog: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
 	if err := db.Sync(); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("Sync: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
-	if err := db.Close(); !errors.Is(err, ErrDatabaseClosed) {
+	if err := db.Close(context.Background()); !errors.Is(err, ErrDatabaseClosed) {
 		t.Errorf("Close: want '%v', got '%v'", ErrDatabaseClosed, err)
 	}
 }
