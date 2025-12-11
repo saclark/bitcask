@@ -58,7 +58,7 @@ type DB struct {
 	index            RecordIndexer          // Records indexed by key.
 	mu               rwLocker
 	compacting       chan struct{}
-	cancelCompaction func()
+	cancelCompaction context.CancelFunc
 	closed           error
 	writeClosed      error
 }
@@ -520,43 +520,29 @@ type compactionState struct {
 // runs automatically in the background when the active segment reaches the
 // maximum size given by [Config.MaxSegmentSize]. However, this method allows
 // callers to manually trigger a log compaction at will.
+//
+// TODO: Update docs to include context.
 func (db *DB) CompactLog(ctx context.Context) (started bool, err error) {
 	select {
 	case _, ok := <-db.compacting:
-		if ok {
-			break
+		if !ok { // Database is closed.
+			db.mu.RLock()
+			defer db.mu.RUnlock()
+			return false, db.closed
 		}
-
-		// Database is closed.
-		db.mu.RLock()
-		defer db.mu.RUnlock()
-		return false, db.closed
 	default:
-		// Compaction is already underway.
-		return false, nil
+		return false, nil // Compaction already underway.
 	}
 
-	db.emit("log compaction: started")
-
-	// Prevent simultaneous compactions.
 	defer func() {
 		db.compacting <- struct{}{}
 	}()
 
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var cancel context.CancelFunc
-	ctx, cancel = context.WithCancel(ctx)
+	db.emit("log compaction: started")
 
-	done := make(chan struct{})
-	defer close(done)
-
+	// TODO: Do this in the lock section below?
 	db.mu.Lock()
-	db.cancelCompaction = func() {
-		cancel()
-		<-done
-	}
+	ctx, db.cancelCompaction = context.WithCancel(ctx)
 	db.mu.Unlock()
 
 	s := &compactionState{}
@@ -602,7 +588,16 @@ func (db *DB) CompactLog(ctx context.Context) (started bool, err error) {
 	// Compact segments.
 	slices.Sort(sids)
 	for _, sid := range sids {
-		if err = db.compactSegment(ctx, s, sid); err != nil {
+		// Check if we should abort.
+		// TODO: Do this check at a a more granular level?
+		select {
+		case <-ctx.Done():
+			// TODO: Cleanup compacted segments.
+			return true, ctx.Err()
+		default:
+		}
+
+		if err = db.compactSegment(s, sid); err != nil {
 			return true, fmt.Errorf(
 				"compacting segment file %s: %w",
 				sid.Filename(),
@@ -628,11 +623,7 @@ func (db *DB) CompactLog(ctx context.Context) (started bool, err error) {
 	return true, nil
 }
 
-func (db *DB) compactSegment(
-	ctx context.Context,
-	s *compactionState,
-	srcSID segmentID,
-) error {
+func (db *DB) compactSegment(s *compactionState, srcSID segmentID) error {
 	srcPath := filepath.Join(db.dir.Name(), srcSID.Filename())
 	src, err := os.Open(srcPath)
 	if err != nil {
@@ -643,13 +634,6 @@ func (db *DB) compactSegment(
 	walDecoder := newWALRecordDecoder(src)
 	var srcOffset int64
 	for {
-		// Check if we should abort.
-		select {
-		case <-ctx.Done():
-			return context.Canceled
-		default:
-		}
-
 		// Decode the record.
 		var rec walRecord
 		nRead, err := walDecoder.Decode(&rec)
@@ -902,21 +886,24 @@ func (db *DB) Sync() error {
 // Once Close has been called on a [DB], it may not be reused; future calls
 // to Close or other methods such as [DB.Get] or [DB.Put] will return
 // [ErrDatabaseClosed].
+//
+// TODO: Update docs to include context.
 func (db *DB) Close(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
 	// Wait for any running log compaction job to complete and prevent another
 	// log compaction from running.
-	select {
-	case _, ok := <-db.compacting:
-		if ok {
-			close(db.compacting)
+OuterLoop:
+	for {
+		select {
+		case _, ok := <-db.compacting:
+			if ok {
+				close(db.compacting)
+			}
+			break OuterLoop
+		case <-ctx.Done():
+			db.mu.RLock()
+			db.cancelCompaction()
+			db.mu.RUnlock()
 		}
-	case <-ctx.Done():
-		db.cancelCompaction()
-		close(db.compacting)
 	}
 
 	db.mu.Lock()

@@ -69,7 +69,7 @@ func TestOpen_LocksDB(t *testing.T) {
 		t.Fatalf("opening tmp DB directory the first time: %v", err)
 	}
 	defer os.RemoveAll(path)
-	defer db.Close()
+	defer db.Close(context.Background())
 
 	want := ErrDatabaseLocked
 	_, err = Open(path, config)
@@ -86,7 +86,7 @@ func TestOpen_FailsAfterLockingDB_UnlocksDB(t *testing.T) {
 		t.Fatalf("setting up tmp DB directory: %v", err)
 	}
 	defer os.RemoveAll(path)
-	defer db.Close()
+	defer db.Close(context.Background())
 
 	// Insert an improperly named segment file, causing Open to fail after it's
 	// already obtained a lock on the dir.
@@ -95,14 +95,14 @@ func TestOpen_FailsAfterLockingDB_UnlocksDB(t *testing.T) {
 		t.Fatalf("creating invalid segment file: %v", err)
 	}
 
-	if err := db.Close(); err != nil {
+	if err := db.Close(context.Background()); err != nil {
 		t.Fatalf("closing the database: %v", err)
 	}
 
 	// Try (and fail) to open the DB.
 	db, err = Open(path, config)
 	if err == nil {
-		db.Close()
+		db.Close(context.Background())
 		t.Fatal("test setup failed: open succeeded by was expected to fail")
 	}
 	if errors.Is(err, ErrDatabaseLocked) {
@@ -120,7 +120,7 @@ func TestOpen_FailsAfterLockingDB_UnlocksDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	defer db.Close()
+	defer db.Close(context.Background())
 }
 
 func TestDB_SingleThreaded(t *testing.T) {
@@ -202,7 +202,7 @@ func TestDB_SingleThreaded(t *testing.T) {
 			assertOp(t, db, op.Op, op.Key, op.Value, 0, op.Err)
 		}
 
-		if err := db.Close(); err != nil {
+		if err := db.Close(context.Background()); err != nil {
 			t.Fatalf("closing DB: %v", err)
 		}
 
@@ -236,7 +236,7 @@ func TestDB_SingleThreaded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("re-opening DB: %v", err)
 		}
-		defer db.Close()
+		defer db.Close(context.Background())
 
 		ops = []struct {
 			Op    string
@@ -280,7 +280,7 @@ func TestGet_WhileCompactingLog(t *testing.T) {
 		t.Fatalf("opening tmp DB directory: %v", err)
 	}
 	defer os.RemoveAll(path)
-	defer db.Close()
+	defer db.Close(context.Background())
 
 	err = db.Put("a", bytes.Repeat([]byte{'a'}, vsize))
 	if err != nil {
@@ -326,7 +326,7 @@ func TestGet_TruncatedRecord(t *testing.T) {
 		t.Fatalf("opening tmp DB directory: %v", err)
 	}
 	defer os.RemoveAll(path)
-	defer db.Close()
+	defer db.Close(context.Background())
 
 	k1, v1 := "aaaa", []byte("bbbb")
 	if err := db.Put(k1, v1); err != nil {
@@ -385,7 +385,7 @@ func TestDelete_NonexistentKey_DoesNotWriteTombstone(t *testing.T) {
 		t.Fatalf("opening tmp DB directory: %v", err)
 	}
 	defer os.RemoveAll(path)
-	defer db.Close()
+	defer db.Close(context.Background())
 
 	for i := range 255 {
 		if err := db.Delete(string([]rune{rune(i)})); err != nil {
@@ -457,7 +457,7 @@ func TestClose_WhilePutting(t *testing.T) {
 			}()
 
 			<-c
-			if err := db.Close(); err != nil {
+			if err := db.Close(context.Background()); err != nil {
 				t.Fatalf("Close(): %v", err)
 			}
 			if err := <-c; !errors.Is(err, ErrDatabaseClosed) {
@@ -501,7 +501,7 @@ func TestClose_WhileGetting(t *testing.T) {
 	}()
 
 	<-c
-	if err := db.Close(); err != nil {
+	if err := db.Close(context.Background()); err != nil {
 		t.Fatalf("Close(): %v", err)
 	}
 	if err := <-c; !errors.Is(err, ErrDatabaseClosed) {
@@ -541,7 +541,7 @@ func TestClose_WhileDeleting(t *testing.T) {
 	}()
 
 	<-c
-	if err := db.Close(); err != nil {
+	if err := db.Close(context.Background()); err != nil {
 		t.Fatalf("Close(): %v", err)
 	}
 	if err := <-c; !errors.Is(err, ErrDatabaseClosed) {
@@ -571,7 +571,7 @@ func TestClose_UnlocksDB(t *testing.T) {
 		t.Fatalf("verifying ~.lock file exists: %v", err)
 	}
 
-	if err := db.Close(); err != nil {
+	if err := db.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
@@ -655,7 +655,7 @@ func BenchmarkGet(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer db.Close()
+			defer db.Close(context.Background())
 
 			err = db.Put(key, value)
 			if err != nil {
@@ -707,7 +707,7 @@ func BenchmarkPut(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close(context.Background())
 
 	for _, tc := range tt {
 		b.Run(tc.name, func(b *testing.B) {
@@ -756,7 +756,7 @@ func BenchmarkPutSync(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close(context.Background())
 
 	for _, tc := range tt {
 		b.Run(tc.name, func(b *testing.B) {

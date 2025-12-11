@@ -2,6 +2,7 @@ package bitcask
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -97,7 +98,7 @@ func TestLogCompaction_AllEligibleDataOutOfDate_OnlyActiveSegmentOrLaterRemains(
 			t.Fatalf("want %s, got %s", want, v)
 		}
 
-		if err := db.Close(); err != nil {
+		if err := db.Close(context.Background()); err != nil {
 			t.Fatalf("closing DB: %v", err)
 		}
 
@@ -138,7 +139,7 @@ func TestLogCompaction_AllEligibleDataOutOfDate_OnlyActiveSegmentOrLaterRemains(
 			t.Fatalf("want nil, got %s", v)
 		}
 
-		if err := db.Close(); err != nil {
+		if err := db.Close(context.Background()); err != nil {
 			t.Fatalf("closing DB: %v", err)
 		}
 	})
